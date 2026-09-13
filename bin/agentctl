@@ -13,7 +13,7 @@ Usage:
   agentctl list [--status queued]
   agentctl cancel <job-id>
   agentctl manifest <job-id>
-  agentctl attention                      # jobs flagged by the hang watchdog
+  agentctl attention                      # jobs flagged needs_attention (untracked spend)
   agentctl ack <job-id>                   # acknowledge; job runs to its ceiling
   agentctl spend                           # rolling spend + token estimates
 

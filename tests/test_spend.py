@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Tests for the two-tier spend / hard-stop policy.
 
-Runs against a SCRATCH copy of the cloud-agents tree (never the live
-~/cloud-agents install). Timers are simulated via the CA_* env overrides —
+Runs against a SCRATCH copy of the outpost tree (never the live
+~/outpost install). Timers are simulated via the CA_* env overrides —
 no real waiting.
 
-Usage (on the Mac):  python3 tests/test_spend.py
+Usage (on the host):  python3 tests/test_spend.py
 Exit 0 = all pass; prints PASS/FAIL per case.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.dirname(HERE)  # build/cloud-agents
+SRC = os.path.dirname(HERE)  # build/outpost
 
 passed, failed = [], []
 
@@ -46,12 +46,11 @@ import openrouter as orp  # noqa: E402
 spend_cfg = yaml.safe_load(open(os.path.join(scratch, "config", "spend.yaml")))
 DB = os.path.join(scratch, "state", "agents.db")
 
-# fast timers for tests: check-in 1m, no-response 2m, ceiling 5m
-os.environ["CA_CHECKIN_MINUTES"] = "1"
+# fast timers for tests: no-response 2m, ceiling 5m
 os.environ["CA_NORESPONSE_MINUTES"] = "2"
 os.environ["CA_CEILING_MINUTES"] = "5"
 T = timeouts.load_timeouts(spend_cfg, "supergrok")
-check("env overrides resolve", T == {"checkin": 1.0, "noresponse": 2.0, "ceiling": 5.0}, str(T))
+check("env overrides resolve", T == {"noresponse": 2.0, "ceiling": 5.0}, str(T))
 
 
 def mkjob(conn, **kw):
@@ -63,22 +62,34 @@ def mkjob(conn, **kw):
     return db.insert_job(conn, **base)
 
 
-# --- 1. check-in flag -------------------------------------------------------
+# --- 1. no time-based check-in flag -------------------------------------------
+# A healthy job must never be flagged just for running a long time.
 conn = db.connect(DB)
 j = mkjob(conn)
 db.update_job(conn, j["id"], status="running",
-              started_at=time.time() - 61)  # 61s > 1m check-in
+              started_at=time.time() - 61)  # past the old 1m check-in
 act = timeouts.enforce(conn, j["id"], timeouts=T)
 j = db.get_job(conn, j["id"])
-check("46s-equivalent: flagged", act == "flagged" and j["status"] == "needs_attention",
+check("long-running job is NOT flagged", act is None and j["status"] == "running",
       f"act={act} status={j['status']}")
+# even well past the old check-in + no-response window: still running
+db.update_job(conn, j["id"], started_at=time.time() - 240)
+act = timeouts.enforce(conn, j["id"], timeouts=T)
+j = db.get_job(conn, j["id"])
+check("4m job still not flagged", act is None and j["status"] == "running",
+      f"act={act} status={j['status']}")
+
+# --- 2. no-response kill ------------------------------------------------------
+# The spend path flags the job directly; unacked past the window -> kill.
+check("flag_attention transitions", db.flag_attention(conn, j["id"], "untracked spend") is True)
+j = db.get_job(conn, j["id"])
+check("spend flag sets needs_attention", j["status"] == "needs_attention",
+      f"status={j['status']}")
 check("attention flag timestamp set", bool(j["attention_flagged_at"]))
 check("attention queue lists it", any(x["id"] == j["id"] for x in db.attention_queue(conn)))
 ev = conn.execute("SELECT kind FROM events WHERE job_id=? ORDER BY seq DESC LIMIT 1",
                   (j["id"],)).fetchone()
 check("flag event logged", ev and ev["kind"] == "attention")
-
-# --- 2. no-response kill ------------------------------------------------------
 # flagged 2.5m ago, never acked -> kill
 db.update_job(conn, j["id"], attention_flagged_at=time.time() - 150)
 act = timeouts.enforce(conn, j["id"], timeouts=T)
@@ -91,7 +102,7 @@ check("kill_reason recorded", bool(j.get("kill_reason")), str(j.get("kill_reason
 # --- 3. ack lets it survive to ceiling ----------------------------------------
 j2 = mkjob(conn)
 db.update_job(conn, j2["id"], status="running", started_at=time.time() - 61)
-check("re-flag", timeouts.enforce(conn, j2["id"], timeouts=T) == "flagged")
+check("flag via spend path", db.flag_attention(conn, j2["id"], "untracked spend") is True)
 check("ack works", db.ack_attention(conn, j2["id"]) is True)
 j2 = db.get_job(conn, j2["id"])
 check("ack timestamp set", bool(j2["attention_acked_at"]))
@@ -179,7 +190,7 @@ class J(dict):
     pass
 check("explicit openrouter", orp.resolve_provider({"provider": "openrouter"}, "hermes", spend_cfg) == "openrouter")
 check("default supergrok", orp.resolve_provider({"provider": "supergrok"}, "hermes", spend_cfg) == "supergrok")
-check("auto+goose -> supergrok (brokered)", orp.resolve_provider({"provider": "auto"}, "goose", spend_cfg) == "supergrok")
+check("auto+goose -> openrouter", orp.resolve_provider({"provider": "auto"}, "goose", spend_cfg) == "openrouter")
 check("auto+hermes -> supergrok", orp.resolve_provider({"provider": "auto"}, "hermes", spend_cfg) == "supergrok")
 
 # --- 9. CLI: attention + ack (through the real HTTP API) -------------------------

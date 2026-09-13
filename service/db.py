@@ -1,4 +1,4 @@
-"""SQLite state store for the cloud-agents dispatcher."""
+"""SQLite state store for the Outpost dispatcher."""
 from __future__ import annotations
 
 import json
@@ -190,7 +190,7 @@ def next_queued(conn) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Attention queue (hang detection) and spend ledger.
+# Attention queue (spend-overflow flags) and spend ledger.
 # ---------------------------------------------------------------------------
 
 def flag_attention(conn, job_id: str, reason: str) -> bool:
