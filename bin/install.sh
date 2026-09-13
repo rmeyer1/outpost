@@ -147,6 +147,23 @@ if changed:
 PY
 }
 
+tune_linux_spend_yaml() {
+  [ "$OS_KIND" = linux ] || return 0
+  python3 - "$ROOT/config/spend.yaml" <<'PY'
+import sys
+from pathlib import Path
+p = Path(sys.argv[1])
+text = p.read_text()
+# The repo default points at the macOS operator's key file. On Linux, use
+# the platform-default location, which is also service/openrouter.py's
+# fallback when openrouter_key_file is unset.
+old = 'openrouter_key_file: "/Users/server/.config/goose/secrets.yaml"'
+new = 'openrouter_key_file: "~/.config/outpost/openrouter.yaml"'
+if old in text:
+    p.write_text(text.replace(old, new, 1))
+PY
+}
+
 ensure_dirs() {
   mkdir -p "$ROOT/state" "$ROOT/jobs" "$ROOT/artifacts" "$ROOT/logs"
 }
@@ -251,7 +268,8 @@ PY
   log "  1. Tokens live in config/api.yaml (mode 600). They are never printed."
   log "     Submit jobs with:  bin/agentctl --client atlas submit --type coding --repo scratch --task '...'"
   log "  2. OpenRouter (optional): put OPENROUTER_API_KEY in"
-  log "     ~/.config/outpost/openrouter.yaml and point spend.yaml at that file."
+  log "     ~/.config/outpost/openrouter.yaml (Linux installs already point"
+  log "     spend.yaml there; macOS keeps its own key path)."
   log "  3. This install is standalone. It does not talk to any other Outpost host."
   log "  4. Pi RAM: keep limits.max_workers at 1 and container_memory at 2g on"
   log "     4 GB boards; an 8 GB Pi can raise memory to 3g. See the README."
@@ -266,6 +284,7 @@ install_python_deps
 ensure_dirs
 write_api_yaml
 tune_linux_agents_yaml
+tune_linux_spend_yaml
 
 if [ "$OS_KIND" = linux ]; then
   if is_debian; then
