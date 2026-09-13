@@ -1,4 +1,4 @@
-"""SQLite state store for the Outpost dispatcher."""
+"""SQLite state store for the cloud-agents dispatcher."""
 from __future__ import annotations
 
 import json

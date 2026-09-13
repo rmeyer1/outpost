@@ -47,8 +47,8 @@ check("auto still defaults to hermes for coding", name == "hermes", reason)
 name, reason = registry.select("auto", "artifact")
 check("auto routes artifact lane to hermes", name == "hermes", reason)
 
-name, reason = registry.select("claude-code", "coding")
-check("claude-code now falls back to grok-build", name == "grok-build", reason)
+name, reason = registry.select("codex", "coding")
+check("explicit codex selects codex", name == "codex", reason)
 
 adapter = registry.load_adapter("grok-build")
 check("registry loads grok_build adapter", adapter.ENGINE_NAME == "grok-build")

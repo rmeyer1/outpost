@@ -1,19 +1,17 @@
-# Outpost
+# Cloud Agents
 
-**Your agents live at your outpost.** Outpost is a self-hosted dock for AI
-agents, running on your own hardware — a Mac mini, a Linux box, even a
-Raspberry Pi. Any authorized agent — Atlas, a grok bot harness, future
-clients — can delegate long or heavy tasks here instead of doing the work
-inline.
+Self-hosted "cloud agents" running on the Mac mini (`robs-mac-mini-1`). Any
+authorized tool on the tailnet — Atlas, the grok bot harness, future clients —
+can delegate long or heavy tasks here instead of doing the work inline.
 
 This README is written for **client tools**. It tells you what the system is
 and exactly how to use it. (Operator details live in `docs/API.md`; the full
-design is in the Outpost design doc.)
+design is in the Cloud Agents design PDF.)
 
 ## What this is
 
 You submit a task. A disposable, isolated worker container spins up on the
-host, clones the repo inside itself, runs an AI coding/generalist harness
+Mac, clones the repo inside itself, runs an AI coding/generalist harness
 against your task, commits the result to a branch, and is destroyed. You get
 back logs, a manifest, a repo bundle, and any artifacts the task produced
 (e.g. an `.xlsx` file for a modeling task).
@@ -22,7 +20,7 @@ Each job is fully isolated:
 
 - One container per job; nothing persists between jobs except what the job
   explicitly produces.
-- The container never sees the host's home directory, SSH keys, or any
+- The container never sees the Mac's home directory, SSH keys, or any
   credential. Model access goes through a host-side broker that attaches the
   real credential server-side.
 - Repos are cloned *inside* the container. Only branches, bundles,
@@ -33,11 +31,11 @@ Each job is fully isolated:
 The dispatcher exposes a Tailnet-only HTTP API. It is the primary interface;
 `bin/agentctl` is just a thin client over it.
 
-- **Base URL:** `http://<host>:18443` — your host's address.
+- **Base URL:** `http://100.101.54.59:18443` — the Mac's Tailscale IPv4.
   Resolve it dynamically with `tailscale ip -4`; do not hardcode the IP.
 - **Auth:** every request needs `Authorization: Bearer <token>`.
   Your token is provisioned by the human operator (stored mode-600 in
-  `~/outpost/config/api.yaml` on the host). Missing/invalid token → 401.
+  `~/cloud-agents/config/api.yaml` on the Mac). Missing/invalid token → 401.
 - There is no LAN or internet exposure: the API binds the Tailscale address
   only. Worker containers cannot reach it.
 
@@ -132,11 +130,10 @@ curl -s -H "Authorization: Bearer $TOKEN" -OJ $API/jobs/$JOB/artifacts/model.xls
 
 ## For the human operator
 
-- `bin/agentctl` — same operations from the host's shell.
+- `bin/agentctl` — same operations from the Mac's shell.
 - `docs/API.md` — full endpoint reference, token provisioning, TLS notes.
-- Services: `com.outpost.api` (the API), `com.outpost.controller`
-  (the dispatcher), `com.outpost.container-system` (macOS launchd labels;
-  systemd units for Linux are on the roadmap).
-- Install root: `~/outpost`. Copy `config/api.yaml.example` to
-  `config/api.yaml`, fill in bearer tokens (mode `600`), and start the
-  services.
+- Launch agents: `com.cloudagents.api` (the API), `com.cloudagents.controller`
+  (the dispatcher), `com.cloudagents.container-system`.
+- Source of truth for this codebase:
+  `~/workspace/goals/self-hosted-cloud-agents-on-the-mac-mini/build/cloud-agents/`
+  (mirrored to `~/cloud-agents/` on the Mac).

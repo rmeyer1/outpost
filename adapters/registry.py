@@ -1,6 +1,6 @@
 """Harness registry: which worker engines exist, which are enabled,
-and how a job picks one. Adding Claude Code / Codex / Goose / OpenCode
-later means adding an entry here plus an adapter module — no caller changes."""
+and how a job picks one. Adding a new engine means an entry here plus
+an adapter module — no caller changes."""
 from __future__ import annotations
 
 ENGINES = {
@@ -18,11 +18,9 @@ ENGINES = {
         "adapter": "adapters.grok_build",
         "fallback": ["hermes"],
     },
-    # Phase 3 placeholders — registered so selection policy can name them.
-    "claude-code": {"enabled": False, "lanes": ["coding"], "adapter": "adapters.claude_code", "fallback": ["grok-build"]},
-    "codex":      {"enabled": False, "lanes": ["coding"], "adapter": "adapters.codex",      "fallback": ["grok-build"]},
-    "goose":      {"enabled": False, "lanes": ["general"], "adapter": "adapters.goose",     "fallback": ["hermes"]},
-    "opencode":   {"enabled": False, "lanes": ["coding"], "adapter": "adapters.opencode",   "fallback": ["hermes"]},
+    "codex":      {"enabled": True, "lanes": ["coding"], "adapter": "adapters.codex",      "fallback": ["grok-build"]},
+    "goose":      {"enabled": True, "lanes": ["general"], "adapter": "adapters.goose",     "fallback": ["hermes"]},
+    "opencode":   {"enabled": True, "lanes": ["coding"], "adapter": "adapters.opencode",   "fallback": ["hermes"]},
 }
 
 TYPE_TO_LANE = {

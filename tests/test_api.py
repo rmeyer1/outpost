@@ -3,10 +3,10 @@
 
 Spins the real API server on 127.0.0.1 with test tokens (CA_API_BIND /
 CA_API_PORT / CA_API_CONFIG env overrides) against a SCRATCH copy of the
-outpost tree — never the live ~/outpost install, never the live
+cloud-agents tree — never the live ~/cloud-agents install, never the live
 config/api.yaml.
 
-Usage (on the host):  python3 tests/test_api.py
+Usage (on the Mac):  python3 tests/test_api.py
 Exit 0 = all pass; prints PASS/FAIL per case.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.dirname(HERE)  # build/outpost
+SRC = os.path.dirname(HERE)  # build/cloud-agents
 
 passed, failed = [], []
 

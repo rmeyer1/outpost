@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dispatcher HTTP API — the primary interface to the Outpost dispatcher.
+"""Dispatcher HTTP API — the primary interface to the cloud-agents dispatcher.
 
 Tailnet-only: binds the Tailscale IPv4 address (resolved dynamically via
 `tailscale ip -4`) — never 0.0.0.0, so it stays off the LAN and off the
@@ -48,7 +48,17 @@ ROUTES = [
     ("GET", r"^/jobs/([^/]+)/artifacts/(.+)$", "artifact"),
     ("GET", r"^/attention$", "attention"),
     ("GET", r"^/spend$", "spend"),
+    ("GET", r"^/dashboard$", "dashboard"),
+    ("GET", r"^/info$", "info"),
+    ("POST", r"^/pair/request$", "pair_request"),
+    ("GET", r"^/pair/status$", "pair_status"),
+    ("POST", r"^/pair/approve$", "pair_approve"),
+    ("GET", r"^/pair/list$", "pair_list"),
 ]
+
+# Paths served without auth (static UI only; all data APIs stay gated).
+PUBLIC_PATHS = {("GET", "/dashboard"), ("POST", "/pair/request"),
+                ("GET", "/pair/status")}
 
 
 def load_api_config() -> dict:
@@ -88,7 +98,7 @@ def resolve_port(cfg: dict) -> int:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "outpost-api/1"
+    server_version = "cloud-agents-api/1"
 
     # Silence the default stderr logging; we log one line per request below.
     def log_message(self, fmt, *args):
@@ -122,6 +132,15 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization") or ""
         if not auth.startswith("Bearer "):
             return None
+        # Reload clients if api.yaml changed (e.g. a device was just paired).
+        try:
+            mtime = os.path.getmtime(self.server.config_path)
+            if mtime != self.server.clients_mtime:
+                cfg = load_api_config()
+                self.server.clients = cfg.get("clients") or {}
+                self.server.clients_mtime = mtime
+        except OSError:
+            pass
         token = auth[len("Bearer "):].strip()
         for name, expected in self.server.clients.items():
             if hmac.compare_digest(token, str(expected)):
@@ -160,14 +179,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle(self) -> None:
         started = time.time()
+        path_only = urllib.parse.urlparse(self.path).path
+        is_public = (self.command, path_only) in PUBLIC_PATHS
         client = self._auth_client()
         status = 500
         try:
-            if client is None:
+            if client is None and not is_public:
                 # No information leakage: same 401 for missing vs bad token.
                 self._error(401, "unauthorized")
                 status = 401
                 return
+            if is_public:
+                client = "dashboard"
             name, (groups, query) = self._route()
             if name == "not_found":
                 self._error(404, "not found")
@@ -278,6 +301,57 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(200, data, content_type_for(path), path.name)
         return 200
 
+    def handle_dashboard(self, groups, query):
+        p = ROOT / "service" / "dashboard.html"
+        if not p.exists():
+            raise DispatchError(404, "dashboard not installed")
+        self._send_bytes(200, p.read_bytes(),
+                         "text/html; charset=utf-8", None)
+        return 200
+
+    def handle_info(self, groups, query):
+        engines = {}
+        try:
+            from adapters import registry
+            engines = dict(registry.ENGINES)
+        except Exception:
+            pass
+        pool = {}
+        try:
+            cfg = dispatch.load_config()
+            lcfg = cfg.get("limits", {})
+            pool = {k: lcfg.get(k) for k in (
+                "max_workers", "container_cpus",
+                "container_memory", "container_disk")}
+        except Exception:
+            pass
+        self._send_json(200, {"engines": engines, "pool": pool})
+        return 200
+
+    def handle_pair_request(self, groups, query):
+        import pairing
+        body = self._read_json_body()
+        self._send_json(200,
+                        pairing.request_pairing(body.get("device_name", "")))
+        return 200
+
+    def handle_pair_status(self, groups, query):
+        import pairing
+        code = (query.get("code") or [""])[0]
+        self._send_json(200, pairing.pairing_status(code))
+        return 200
+
+    def handle_pair_approve(self, groups, query):
+        import pairing
+        body = self._read_json_body()
+        self._send_json(200, pairing.approve_pairing(body.get("code", "")))
+        return 200
+
+    def handle_pair_list(self, groups, query):
+        import pairing
+        self._send_json(200, pairing.list_pairings())
+        return 200
+
 
 def main() -> int:
     cfg = load_api_config()
@@ -290,6 +364,12 @@ def main() -> int:
     server = ThreadingHTTPServer((bind, port), Handler)
     server.daemon_threads = True
     server.clients = cfg["clients"]
+    server.config_path = os.environ.get("CA_API_CONFIG",
+                                        str(ROOT / "config" / "api.yaml"))
+    try:
+        server.clients_mtime = os.path.getmtime(server.config_path)
+    except OSError:
+        server.clients_mtime = 0
     host, actual_port = server.server_address[0], server.server_address[1]
     print(f"api: listening on http://{host}:{actual_port} "
           f"({len(server.clients)} client(s))", flush=True)

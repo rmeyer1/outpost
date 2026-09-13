@@ -8,10 +8,10 @@ Covers:
 - entrypoint.wait_for_host_seed: waits for the injected tree, times out clearly.
 - dispatch.submit_job stores ref; API POST /jobs accepts/rejects ref.
 
-Runs against a SCRATCH copy of the outpost tree (never the live
-~/outpost install).
+Runs against a SCRATCH copy of the cloud-agents tree (never the live
+~/cloud-agents install).
 
-Usage (on the host):  python3 tests/test_seed.py
+Usage (on the Mac):  python3 tests/test_seed.py
 Exit 0 = all pass; prints PASS/FAIL per case.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.dirname(HERE)  # build/outpost
+SRC = os.path.dirname(HERE)  # build/cloud-agents
 
 passed, failed = [], []
 

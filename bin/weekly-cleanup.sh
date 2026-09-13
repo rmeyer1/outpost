@@ -1,17 +1,17 @@
 #!/bin/bash
-# Weekly outpost disk cleanup. Safe to run anytime; only removes:
-#  1. ~/outpost-backup-* dirs beyond the 2 newest
+# Weekly cloud-agents disk cleanup. Safe to run anytime; only removes:
+#  1. ~/cloud-agents-backup-* dirs beyond the 2 newest
 #  2. DANGLING container images (tagged images untouched; never --all)
 #  3. Stale agent build artifacts in /tmp older than 7 days
 set -u
 
-CBIN="$HOME/outpost/rt/bin/container"
+CBIN="$HOME/cloud-agents/rt/bin/container"
 DATA_VOL="/System/Volumes/Data"
 
 avail_before=$(df -k "$DATA_VOL" 2>/dev/null | tail -1 | awk '{print $4}')
 
 # 1. Old backups — keep the 2 newest
-ls -dt "$HOME"/outpost-backup-* 2>/dev/null | tail -n +3 | while IFS= read -r d; do
+ls -dt "$HOME"/cloud-agents-backup-* 2>/dev/null | tail -n +3 | while IFS= read -r d; do
   [ -n "$d" ] && rm -rf "$d"
 done
 

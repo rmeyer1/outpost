@@ -1,37 +1,37 @@
-# Outpost Dispatcher API
+# Cloud Agents Dispatcher API
 
-The HTTP API is the **primary interface** to the outpost dispatcher.
+The HTTP API is the **primary interface** to the cloud-agents dispatcher.
 `bin/agentctl` is a thin client over it (same flags, same output). Any
 Tailnet client — Atlas, the grok bot harness, future tooling — speaks this API.
 
 ## Base URL and auth
 
-- **Base URL:** `http://<host>:18443` (your host's address;
+- **Base URL:** `http://100.101.54.59:18443` (the Mac's Tailscale IPv4;
   resolve dynamically with `tailscale ip -4`, do not hardcode the IP).
 - **Auth:** every endpoint requires `Authorization: Bearer <token>`
   (constant-time comparison). Missing/invalid token → `401 {"error":
   "unauthorized"}` with no information leakage.
-- Tokens live in `~/outpost/config/api.yaml` (mode `600`) under
+- Tokens live in `~/cloud-agents/config/api.yaml` (mode `600`) under
   `clients:` — one token per client (`atlas`, `grok-bot`).
 
 ### Adding a client
 
-On the host (never print the token anywhere):
+On the Mac (never print the token anywhere):
 
 ```bash
 python3 - <<'EOF'
 import secrets, yaml
-p = "/Users/server/outpost/config/api.yaml"
+p = "/Users/server/cloud-agents/config/api.yaml"
 cfg = yaml.safe_load(open(p))
 cfg["clients"]["new-client"] = secrets.token_urlsafe(32)
 yaml.safe_dump(cfg, open(p, "w"))
 EOF
-chmod 600 /Users/server/outpost/config/api.yaml
+chmod 600 /Users/server/cloud-agents/config/api.yaml
 ```
 
 No API restart is needed — tokens are read at startup only, so **restart
-`com.outpost.api`** after changing them:
-`launchctl kickstart -k gui/$(id -u)/com.outpost.api`.
+`com.cloudagents.api`** after changing them:
+`launchctl kickstart -k gui/$(id -u)/com.cloudagents.api`.
 
 ## Endpoints
 
@@ -82,7 +82,7 @@ string (e.g. `https://github.com/rmeyer1/rain-room.git`) in `CA_REPO`. When
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"type":"artifact","repo":"scratch","task":"build an Excel model","idempotency_key":"x1"}' \
-  http://<host>:18443/jobs
+  http://100.101.54.59:18443/jobs
 ```
 
 ### `GET /jobs?status=` — list
@@ -150,7 +150,7 @@ Binary download with `Content-Disposition: attachment`. Serves:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" \
-  -OJ http://<host>:18443/jobs/JOB_ID/artifacts/model.xlsx
+  -OJ http://100.101.54.59:18443/jobs/JOB_ID/artifacts/model.xlsx
 ```
 
 ## Security model
@@ -179,7 +179,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ## Operations
 
-- Launch agent: `com.outpost.api` (keep-alive, restarts on crash/boot).
-- Logs: `~/outpost/build/api.log` (one line per request: client, method,
+- Launch agent: `com.cloudagents.api` (keep-alive, restarts on crash/boot).
+- Logs: `~/cloud-agents/build/api.log` (one line per request: client, method,
   path, status, ms — never tokens).
-- Health check: `curl -H "Authorization: Bearer $TOKEN" http://<host>:18443/spend`
+- Health check: `curl -H "Authorization: Bearer $TOKEN" http://100.101.54.59:18443/spend`

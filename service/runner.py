@@ -22,6 +22,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -52,7 +53,7 @@ def load_spend() -> dict:
 
 
 def container_bin() -> str:
-    return os.environ.get("CA_CONTAINER_BIN", str(Path.home() / "outpost" / "rt" / "bin" / "container"))
+    return os.environ.get("CA_CONTAINER_BIN", str(Path.home() / "cloud-agents" / "rt" / "bin" / "container"))
 
 
 def run(cmd, **kw):
@@ -163,6 +164,7 @@ def main(job_id: str) -> int:
     proxy_proc = None
     broker_proc = None
     seed_dir = None  # host-side repo seed; cleaned in the finally block
+    stop_agent_tail = threading.Event()  # set in finally; stops the log tail
     provider = "supergrok"   # resolved after engine selection
     or_api_key = None
     or_poll_seconds = 300.0
@@ -284,6 +286,65 @@ def main(job_id: str) -> int:
         if r.returncode != 0:
             raise RuntimeError(f"container run failed: {r.stderr.strip()[-500:]}")
         log("container", f"started {name}")
+
+        # Stream the agent's session output into the job log so the
+        # dashboard shows a live transcript. Daemon thread, fully
+        # exception-safe: it can never fail the job.
+        # NOTE: the tail uses its OWN sqlite connection — the main
+        # thread's connection cannot be shared across threads.
+        def _tail_agent_logs():
+            import sqlite3 as _sqlite3
+            tdb = _sqlite3.connect(
+                str(ROOT / config["paths"]["state"]), timeout=30.0)
+            tdb.row_factory = _sqlite3.Row
+
+            def tlog(kind, msg):
+                line = json.dumps({"ts": time.time(), "kind": kind,
+                                   "msg": redact(str(msg))})
+                with open(log_path, "a") as f:
+                    f.write(line + "\n")
+                log_event(tdb, job_id, kind, redact(str(msg))[:500])
+
+            seen = 0
+            tailed = 0
+            try:
+                while not stop_agent_tail.is_set():
+                    try:
+                        r = run([cbin, "logs", "-n", "300", name],
+                                timeout=30)
+                    except Exception:
+                        break
+                    if r.returncode == 0 and r.stdout:
+                        lines = r.stdout.splitlines()
+                        if len(lines) < seen:
+                            seen = 0  # log truncated/rotated; resync
+                        for ln in lines[seen:]:
+                            if tailed >= 3000:
+                                break
+                            ln = ln.strip()
+                            if ln:
+                                tlog("agent", ln[:2000])
+                                tailed += 1
+                        seen = len(lines)
+                        if tailed >= 3000:
+                            tlog("warn",
+                                 "agent log truncated at 3000 lines")
+                            break
+                    if stop_agent_tail.wait(5):
+                        break
+            except Exception as exc:
+                try:
+                    tlog("warn",
+                         f"agent log tail ended: {type(exc).__name__}")
+                except Exception:
+                    pass
+            finally:
+                try:
+                    tdb.close()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_tail_agent_logs, daemon=True).start()
 
         # 4b. inject the host-seeded repo tree. The entrypoint is already
         # waiting for /work/repo/.git (up to 120s).
@@ -463,6 +524,11 @@ def main(job_id: str) -> int:
             pass
         return 1
     finally:
+        # Stop the agent-log tail before the container is destroyed.
+        try:
+            stop_agent_tail.set()
+        except Exception:
+            pass
         # Host seed dirs must never accumulate (normally removed right
         # after the container copy; this covers failure paths).
         try:

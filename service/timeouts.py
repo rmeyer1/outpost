@@ -1,4 +1,4 @@
-"""Time-based hard stops for outpost-agent jobs (both tiers).
+"""Time-based hard stops for cloud-agent jobs (both tiers).
 
 Policy (from config/spend.yaml):
   checkin_minutes    -> flag job as needs_attention (container keeps running)

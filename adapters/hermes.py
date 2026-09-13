@@ -6,7 +6,7 @@ Contract (shared by every adapter):
   - parse_result(out_dir: Path) -> dict  (result contract)
 
 The agent process runs INSIDE the job container. Model access is brokered:
-the runner starts `hermes proxy` on the host (xai-oauth subscription);
+the runner starts `hermes proxy` on the Mac host (xai-oauth subscription);
 the container gets only the proxy URL + a placeholder client token, which the
 proxy replaces with the real credential per request. The host's
 ~/.hermes/auth.json is never mounted into the container.
