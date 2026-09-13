@@ -114,9 +114,15 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # -- helpers -----------------------------------------------------------
+    def _cors_headers(self) -> None:
+        # The multi-host dashboard calls other outposts cross-origin from the
+        # browser. Tailnet-only API; auth is an explicit bearer token, never cookies.
+        self.send_header("Access-Control-Allow-Origin", "*")
+
     def _send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload, default=str).encode()
         self.send_response(status)
+        self._cors_headers()
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -125,6 +131,7 @@ class Handler(BaseHTTPRequestHandler):
     def _send_bytes(self, status: int, data: bytes, ctype: str,
                     filename: str | None = None) -> None:
         self.send_response(status)
+        self._cors_headers()
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         if filename:
@@ -228,6 +235,15 @@ class Handler(BaseHTTPRequestHandler):
 
     do_GET = _handle
     do_POST = _handle
+
+    def do_OPTIONS(self):
+        # CORS preflight for cross-origin dashboard calls between outposts.
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
 
     # -- endpoints ---------------------------------------------------------
     def handle_submit(self, groups, query):
