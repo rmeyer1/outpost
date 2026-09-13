@@ -1,16 +1,17 @@
 """OpenRouter provider groundwork (Tier 2 overflow).
 
 Responsibilities:
-  - read the OpenRouter key from its secure location ON THE HOST ONLY
-    (service/openrouter.py runs on the host, never inside a container).
+  - read the OpenRouter key from its secure location ON THE MAC ONLY
+    (service/openrouter.py runs on the Mac host, never inside a container).
   - poll the key-usage endpoint: GET https://openrouter.ai/api/v1/auth/key
   - pre-flight cap check before starting an OpenRouter job
   - rolling 7-day spend ledger helpers (ledger itself lives in db.py)
 
 The key is NEVER logged, printed, or copied off the Mac. It is registered
 with service/redact.py the moment it is read so it can never leak into
-logs. The container never sees it directly: provider-agnostic engines
-(goose/opencode) receive it only via a redacted, scoped channel (Phase 3).
+logs. The container never sees it directly. Worker engines authenticate to the
+per-job broker with CA_CLIENT_TOKEN; the broker attaches this key
+server-side on the OpenRouter path.
 
 Spend model:
   - /auth/key returns data.usage = lifetime USD consumed on the key.
@@ -38,7 +39,7 @@ def read_key(spend_cfg: dict) -> str:
     CA_OR_KEY_FILE (test-only) overrides the configured key file location.
     """
     path = os.environ.get("CA_OR_KEY_FILE") or spend_cfg.get(
-        "openrouter_key_file", "~/.config/outpost/secrets.yaml")
+        "openrouter_key_file", "/Users/server/.config/goose/secrets.yaml")
     name = spend_cfg.get("openrouter_key_name", "OPENROUTER_API_KEY")
     key = None
     with open(os.path.expanduser(path)) as f:

@@ -187,6 +187,24 @@ def cmd_spend(a) -> int:
     return 0
 
 
+def cmd_pair_approve(a) -> int:
+    payload = api("POST", "/pair/approve", {"code": a.code})
+    print(f"paired {payload['device_name']} as client {payload['client']}")
+    return 0
+
+
+def cmd_pair_list(a) -> int:
+    payload = api("GET", "/pair/list")
+    pairs = payload.get("pairings", [])
+    if not pairs:
+        print("no pending pairings")
+        return 0
+    for p in pairs:
+        print(f"{p['code']}  {p['device_name']}  {p['status']}  "
+              f"{p['age_s']}s old")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="agentctl")
     ap.add_argument("--client", default=None,
@@ -219,6 +237,9 @@ def main() -> int:
     s = sub.add_parser("attention"); s.set_defaults(fn=cmd_attention)
     s = sub.add_parser("ack"); s.add_argument("job_id"); s.set_defaults(fn=cmd_ack)
     s = sub.add_parser("spend"); s.set_defaults(fn=cmd_spend)
+    s = sub.add_parser("pair-approve"); s.add_argument("code")
+    s.set_defaults(fn=cmd_pair_approve)
+    s = sub.add_parser("pair-list"); s.set_defaults(fn=cmd_pair_list)
 
     a = ap.parse_args()
     cfg = api_config()

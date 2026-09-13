@@ -39,7 +39,7 @@ def load_spend() -> dict:
 def container_bin() -> str:
     import os
     return os.environ.get("CA_CONTAINER_BIN",
-                          str(Path.home() / "outpost" / "rt" / "bin" / "container"))
+                          str(Path.home() / "cloud-agents" / "rt" / "bin" / "container"))
 
 
 def recover(config) -> None:
@@ -81,7 +81,7 @@ def main() -> int:
     config = load_config()
     spend_cfg = load_spend()
     # wait for the container system (after a reboot the
-    # com.outpost.container-system agent starts it in parallel)
+    # com.cloudagents.container-system agent starts it in parallel)
     cbin = container_bin()
     for _ in range(60):
         try:

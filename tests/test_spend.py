@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Tests for the two-tier spend / hard-stop policy.
 
-Runs against a SCRATCH copy of the outpost tree (never the live
-~/outpost install). Timers are simulated via the CA_* env overrides —
+Runs against a SCRATCH copy of the cloud-agents tree (never the live
+~/cloud-agents install). Timers are simulated via the CA_* env overrides —
 no real waiting.
 
-Usage (on the host):  python3 tests/test_spend.py
+Usage (on the Mac):  python3 tests/test_spend.py
 Exit 0 = all pass; prints PASS/FAIL per case.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.dirname(HERE)  # build/outpost
+SRC = os.path.dirname(HERE)  # build/cloud-agents
 
 passed, failed = [], []
 
@@ -179,7 +179,7 @@ class J(dict):
     pass
 check("explicit openrouter", orp.resolve_provider({"provider": "openrouter"}, "hermes", spend_cfg) == "openrouter")
 check("default supergrok", orp.resolve_provider({"provider": "supergrok"}, "hermes", spend_cfg) == "supergrok")
-check("auto+goose -> openrouter", orp.resolve_provider({"provider": "auto"}, "goose", spend_cfg) == "openrouter")
+check("auto+goose -> supergrok (brokered)", orp.resolve_provider({"provider": "auto"}, "goose", spend_cfg) == "supergrok")
 check("auto+hermes -> supergrok", orp.resolve_provider({"provider": "auto"}, "hermes", spend_cfg) == "supergrok")
 
 # --- 9. CLI: attention + ack (through the real HTTP API) -------------------------

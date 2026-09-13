@@ -341,21 +341,26 @@ class BrokerState:
                 path = prefix
             elif path.startswith("/v1/"):
                 path = prefix + path[3:]
-            out = [(k, v) for k, v in out if k.lower() != "authorization"]
+            out = [(k, v) for k, v in out
+                   if k.lower() not in ("authorization", "x-api-key")]
+            # x-api-key carries our internal job token; OpenRouter wants
+            # only the
+            # Bearer key - a bogus x-api-key could confuse it.
             out.append(("Authorization", "Bearer " + (self.or_key or "")))
-            out.append(("X-Title", "outpost"))
+            out.append(("X-Title", "cloud-agents"))
             host = self.cfg["or_host"]
             port = self.cfg["or_port"]
             out.append(("Host", f"{host}:{port}" if port not in (80, 443)
                         else host))
-            body = self._rewrite_body(body, for_openrouter=True)
+            body = self._rewrite_body(body, for_openrouter=True, path=path)
         else:
             out.append(("Host", f"127.0.0.1:{self.sg_port}"))
-            body = self._rewrite_body(body, for_openrouter=False)
+            body = self._rewrite_body(body, for_openrouter=False, path=path)
         out.append(("Connection", "close"))
         return path, out, body
 
-    def _rewrite_body(self, body: bytes, for_openrouter: bool) -> bytes:
+    def _rewrite_body(self, body: bytes, for_openrouter: bool,
+                      path: str = "") -> bytes:
         if not body or not self.cfg["inject_stream_usage"] and not for_openrouter:
             return body
         obj = _try_json(body)
@@ -365,7 +370,11 @@ class BrokerState:
         if for_openrouter and "model" in obj:
             obj["model"] = self.cfg["or_model"]
             changed = True
-        if self.cfg["inject_stream_usage"] and obj.get("stream") is True:
+        # Anthropic-format requests don't use OpenAI's stream_options -
+        # don't pollute them.
+        is_anthropic = "/messages" in path
+        if (self.cfg["inject_stream_usage"] and obj.get("stream") is True
+                and not is_anthropic):
             so = obj.get("stream_options")
             if not isinstance(so, dict):
                 so = {}

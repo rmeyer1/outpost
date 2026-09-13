@@ -1,5 +1,5 @@
-# Outpost — Phase 1 dispatcher config
-# All paths are relative to the outpost root on the host (~/outpost).
+# Cloud agents — Phase 1 dispatcher config
+# All paths are relative to the cloud-agents root on the Mac (~/cloud-agents).
 
 # Harness registry: which worker engines exist and which are enabled.
 engines:
@@ -22,6 +22,32 @@ engines:
     # to hermes.
     grok_bin: "/usr/local/bin/grok"
     grok_version: "1.0.30"
+  codex:
+    enabled: true
+    lanes: [coding]
+    model: "grok-4.6"
+    # OpenAI `codex` CLI (pinned version below). Headless `codex exec`;
+    # model access is brokered through CA_PROXY_URL + CA_CLIENT_TOKEN.
+    codex_bin: "/usr/local/bin/codex"
+    codex_version: "0.154.0"
+  goose:
+    enabled: true
+    lanes: [general]
+    model: "grok-4.6"
+    # Block `goose` CLI (pinned GitHub-release binary). Headless
+    # `goose run --instructions`; OpenAI-compatible provider pointed at
+    # the per-job broker. Select with --engine goose.
+    goose_bin: "/usr/local/bin/goose"
+    goose_version: "1.50.0"
+  opencode:
+    enabled: true
+    lanes: [coding]
+    model: "grok-4.6"
+    # `opencode` CLI (pinned npm package opencode-ai). Headless
+    # `opencode run`; custom provider in opencode.json points at the
+    # broker. Select with --engine opencode.
+    opencode_bin: "/usr/local/bin/opencode"
+    opencode_version: "1.18.30"
 
 # Repositories a job may clone inside its container.
 # 'scratch' = fresh `git init` inside the container, no network clone.
@@ -33,6 +59,7 @@ repos:
   allowlist:
     - scratch
     - https://github.com/rmeyer1/rain-room.git
+    - https://github.com/rmeyer1/outpost.git
   host_seeded:
     https://github.com/rmeyer1/rain-room.git:
       clone_url: git@github.com:rmeyer1/rain-room.git
@@ -47,7 +74,7 @@ limits:
   container_disk: "20g"
 
 # Per-job model proxy (host side). The container reaches the proxy at
-# proxy.container_host; the proxy binds proxy.bind on the host.
+# proxy.container_host; the proxy binds proxy.bind on the Mac.
 proxy:
   provider: "xai"
   # Credential boundary: the Hermes proxy (which attaches the real upstream
@@ -71,5 +98,5 @@ paths:
   artifacts: "artifacts"
   logs: "logs"
 
-# Where the Hermes venv lives on the host (host side only).
-hermes_venv: "~/.hermes/hermes-agent/venv"
+# Where the Hermes venv lives on the Mac (host side only).
+hermes_venv: "/Users/server/.hermes/hermes-agent/venv"

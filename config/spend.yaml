@@ -1,4 +1,4 @@
-# Spend & hard-stop policy for outpost-agent jobs.
+# Spend & hard-stop policy for cloud-agent jobs.
 #
 # Tier 1 — SuperGrok (default): subscription credits, weekly reset, liberal
 # usage. No dollar cap; controls are time-based (hang detection + ceiling).
@@ -45,16 +45,17 @@ tiers:
 # When to route a job to Tier 2 (openrouter) instead of Tier 1 (supergrok):
 #  - job.provider == 'openrouter' (explicit per-task selection via
 #    `agentctl submit --provider openrouter`)
-#  - provider == 'auto' and the engine is provider-agnostic (goose, opencode)
-#    -> openrouter, because those engines need a raw API key, not the
-#    brokered SuperGrok proxy.
+#  - provider == 'auto' and the engine is listed in provider_agnostic_engines
+#    -> openrouter. (Currently empty: every engine speaks an
+#    OpenAI-compatible API and authenticates via the per-job broker
+#    (CA_PROXY_URL + CA_CLIENT_TOKEN); none need a raw key in-container.)
 #  - MID-FLIGHT FAILOVER (see `failover:` below): when the SuperGrok
 #    upstream starts returning 429s, the per-job broker re-points its
 #    upstream to OpenRouter transparently — the in-container agent just
 #    sees its requests start succeeding again.
 routing:
   default_provider: "supergrok"
-  provider_agnostic_engines: ["goose", "opencode"]
+  provider_agnostic_engines: []
 
 # Mid-flight SuperGrok -> OpenRouter failover (enforced in the per-job
 # broker, service/proxy_broker.py, which sees real upstream status codes).
@@ -103,9 +104,9 @@ pricing:
         input_per_m_usd: 0.03
         output_per_m_usd: 0.07
 
-# Secure location of the OpenRouter key ON THE HOST. Read server-side only by
+# Secure location of the OpenRouter key ON THE MAC. Read server-side only by
 # service/openrouter.py; never logged, never copied off the host, never
 # injected into a container's environment in the clear (it is registered
 # with the redactor the moment it is read).
-openrouter_key_file: "~/.config/outpost/secrets.yaml"
+openrouter_key_file: "/Users/server/.config/goose/secrets.yaml"
 openrouter_key_name: "OPENROUTER_API_KEY"

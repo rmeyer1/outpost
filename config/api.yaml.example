@@ -1,10 +1,10 @@
-# Outpost dispatcher API — COPY to api.yaml and fill in real tokens.
+# Cloud agents dispatcher API — COPY to api.yaml and fill in real tokens.
 #
 #   cp config/api.yaml.example config/api.yaml
 #   python3 -c "import secrets; print(secrets.token_urlsafe(32))"  # per client
 #   chmod 600 config/api.yaml
 #
-# NEVER commit api.yaml. Tokens live only on the host (mode 600).
+# NEVER commit api.yaml. Tokens live only on the Mac (mode 600).
 
 # Local port the API listens on.
 port: 18443
