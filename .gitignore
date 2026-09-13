@@ -1,0 +1,21 @@
+# Runtime / secrets — never commit the live config
+config/api.yaml
+config/*.local.yaml
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Job runtime data
+artifacts/
+jobs/
+*.bundle
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

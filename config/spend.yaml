@@ -1,0 +1,111 @@
+# Spend & hard-stop policy for outpost-agent jobs.
+#
+# Tier 1 — SuperGrok (default): subscription credits, weekly reset, liberal
+# usage. No dollar cap; controls are time-based (hang detection + ceiling).
+# Tier 2 — OpenRouter (overflow): pay-per-token. Controls are dollar-based
+# (rolling 7-day cap) PLUS the same time-based controls as Tier 1.
+#
+# Every value here is tunable. For tests, the controller also honors env-var
+# overrides: CA_CHECKIN_MINUTES, CA_NORESPONSE_MINUTES, CA_CEILING_MINUTES,
+# CA_OR_POLL_SECONDS.
+
+tiers:
+  supergrok:
+    description: "Default path. SuperGrok subscription credits (weekly reset)."
+    dollar_cap_usd: null          # no dollar cap on the subscription tier
+    # Hang detection: flag for human review after this many minutes.
+    # The container KEEPS RUNNING while flagged; the job is not killed.
+    checkin_minutes: 45
+    # No-response kill: if still unacknowledged this many minutes after the
+    # flag, kill the job. (75 min elapsed with the defaults.)
+    noresponse_minutes: 30
+    # Hard ceiling: kill the job at this many minutes elapsed, no exceptions,
+    # even if acknowledged.
+    ceiling_minutes: 180
+
+  openrouter:
+    description: "Overflow path. Pay-per-token via OpenRouter."
+    model: "deepseek/deepseek-v4-flash-0731"
+    cap_usd: 25.0                 # rolling cap across ALL jobs
+    cap_window_days: 7
+    # Same time-based controls as Tier 1.
+    checkin_minutes: 45
+    noresponse_minutes: 30
+    ceiling_minutes: 180
+    # How often the runner polls the key-usage endpoint mid-job.
+    usage_poll_seconds: 300
+    # Upstream connection used by the broker after a mid-flight failover.
+    # (Test overrides: CA_OR_HOST, CA_OR_PORT, CA_OR_TLS=0/1 — point at a
+    # mock in tests. The /v1 request path is remapped to path_prefix.)
+    api_host: "openrouter.ai"
+    api_port: 443
+    api_tls: true
+    path_prefix: "/api/v1"
+
+# When to route a job to Tier 2 (openrouter) instead of Tier 1 (supergrok):
+#  - job.provider == 'openrouter' (explicit per-task selection via
+#    `agentctl submit --provider openrouter`)
+#  - provider == 'auto' and the engine is provider-agnostic (goose, opencode)
+#    -> openrouter, because those engines need a raw API key, not the
+#    brokered SuperGrok proxy.
+#  - MID-FLIGHT FAILOVER (see `failover:` below): when the SuperGrok
+#    upstream starts returning 429s, the per-job broker re-points its
+#    upstream to OpenRouter transparently — the in-container agent just
+#    sees its requests start succeeding again.
+routing:
+  default_provider: "supergrok"
+  provider_agnostic_engines: ["goose", "opencode"]
+
+# Mid-flight SuperGrok -> OpenRouter failover (enforced in the per-job
+# broker, service/proxy_broker.py, which sees real upstream status codes).
+failover:
+  enabled: true
+  # Fire after this many CONSECUTIVE upstream 429s (no successful response
+  # between them), all inside the trailing window_seconds ...
+  consecutive_429s: 3
+  # ... or when >=2 429s arrive inside the trailing window while the
+  # current 429 episode (everything since the last successful response)
+  # spans longer than window_seconds — the slow-drip rate-limit case that
+  # never reaches the burst threshold.
+  window_seconds: 60
+  # Upstream status codes that count toward the trigger.
+  status_codes: [429]
+  # Guards: the OpenRouter rolling-cap pre-check runs before every
+  # failover; if the cap is already hit the job is flagged
+  # needs_attention instead of failing over. One failover per job max,
+  # no fail-back mid-job.
+  #
+  # Test overrides (env): CA_FO_ENABLED, CA_FO_CONSECUTIVE_429S,
+  # CA_FO_WINDOW_SECONDS.
+
+# Token telemetry: the broker extracts `usage` from every upstream
+# response (plain JSON and SSE streams) and records per-job token counts
+# for spend attribution. The $25 cap is always enforced from OpenRouter
+# key-usage deltas (cash truth); token math is the attribution layer and
+# is reconciled against the delta at finalize time.
+telemetry:
+  # Inject `stream_options: {include_usage: true}` into streamed requests
+  # so SSE responses carry usage. Harmless pass-through for providers
+  # that ignore it; disable if a provider ever 400s on it.
+  # Env override: CA_TELEMETRY_INJECT_STREAM_USAGE (0/1).
+  inject_stream_usage: true
+
+# Per-token pricing for spend ESTIMATES (attribution only).
+pricing:
+  supergrok:
+    source: "subscription"
+    input_per_m_usd: 0.0
+    output_per_m_usd: 0.0
+  openrouter:
+    source: "token_estimate"
+    models:
+      "deepseek/deepseek-v4-flash-0731":
+        input_per_m_usd: 0.03
+        output_per_m_usd: 0.07
+
+# Secure location of the OpenRouter key ON THE HOST. Read server-side only by
+# service/openrouter.py; never logged, never copied off the host, never
+# injected into a container's environment in the clear (it is registered
+# with the redactor the moment it is read).
+openrouter_key_file: "~/.config/outpost/secrets.yaml"
+openrouter_key_name: "OPENROUTER_API_KEY"

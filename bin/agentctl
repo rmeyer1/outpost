@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""agentctl — thin HTTP client for the cloud-agents dispatcher API.
+
+All dispatcher logic lives server-side (service/dispatch.py, exposed by
+service/api.py). This CLI only builds requests and pretty-prints responses,
+so its output is identical to the pre-API implementation.
+
+Usage:
+  agentctl [--client NAME] submit --type coding --repo scratch --task-file request.md [--engine auto] [--provider supergrok|openrouter] [--budget-usd 2] [--max-minutes 30] [--idempotency-key K] [--ref pull/8/head]
+  agentctl [--client NAME] submit --type artifact --task "build an Excel model that ..."
+  agentctl status <job-id>
+  agentctl logs <job-id> [--tail N]
+  agentctl list [--status queued]
+  agentctl cancel <job-id>
+  agentctl manifest <job-id>
+  agentctl attention                      # jobs flagged by the hang watchdog
+  agentctl ack <job-id>                   # acknowledge; job runs to its ceiling
+  agentctl spend                           # rolling spend + token estimates
+
+Config: ROOT/config/api.yaml (base URL + bearer tokens, mode 600).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "service"))
+
+import yaml  # noqa: E402
+from tailnet import tailscale_ip  # noqa: E402  (address helper only; no dispatcher logic)
+
+BASE = ""
+TOKEN = ""
+
+
+def api_config() -> dict:
+    path = ROOT / "config" / "api.yaml"
+    try:
+        with open(path) as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        print(f"error: missing {path} — the dispatcher API is not configured "
+              f"on this machine", file=sys.stderr)
+        sys.exit(2)
+
+
+def base_url(cfg: dict) -> str:
+    if cfg.get("base_url"):
+        return str(cfg["base_url"]).rstrip("/")
+    bind = str(cfg.get("bind", "auto")).lower()
+    if bind in ("localhost", "127.0.0.1"):
+        host = "127.0.0.1"
+    elif bind == "auto":
+        host = tailscale_ip()
+    else:
+        host = str(cfg.get("bind"))
+    return f"http://{host}:{cfg.get('port', 18443)}"
+
+
+def call(method: str, path: str, body: dict | None = None,
+         query: str = "") -> tuple[int, bytes]:
+    url = BASE + path + query
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={"Authorization": f"Bearer {TOKEN}",
+                 "Content-Type": "application/json",
+                 "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except (urllib.error.URLError, OSError, TimeoutError):
+        print(f"dispatcher API not reachable at {BASE} — "
+              f"is com.cloudagents.api running?", file=sys.stderr)
+        sys.exit(2)
+
+
+def api(method: str, path: str, body: dict | None = None,
+        query: str = "") -> dict:
+    status, raw = call(method, path, body, query)
+    try:
+        payload = json.loads(raw.decode("utf-8")) if raw else {}
+    except Exception:
+        payload = {}
+    if status >= 400:
+        print(f"error: {payload.get('error', f'HTTP {status}')}",
+              file=sys.stderr)
+        sys.exit(2)
+    return payload
+
+
+def cmd_submit(a) -> int:
+    if a.task_file:
+        task = Path(a.task_file).read_text()
+    elif a.task:
+        task = a.task
+    else:
+        task = sys.stdin.read()
+    payload = api("POST", "/jobs", {
+        "type": a.type, "repo": a.repo, "base": a.base, "task": task,
+        "engine": a.engine, "provider": a.provider,
+        "budget_usd": a.budget_usd, "max_minutes": a.max_minutes,
+        "idempotency_key": a.idempotency_key, "ref": a.ref,
+    })
+    print(payload["id"])
+    return 0
+
+
+def cmd_status(a) -> int:
+    view = api("GET", f"/jobs/{urllib.parse.quote(a.job_id, safe='')}")
+    print(json.dumps(view, indent=2, default=str))
+    return 0
+
+
+def cmd_logs(a) -> int:
+    q = f"?tail={a.tail}" if a.tail else ""
+    payload = api("GET",
+                  f"/jobs/{urllib.parse.quote(a.job_id, safe='')}/logs", query=q)
+    for e in payload.get("entries", []):
+        if e.get("raw"):
+            print(e.get("msg"))
+        else:
+            print(f"[{e.get('kind')}] {e.get('msg')}")
+    return 0
+
+
+def cmd_list(a) -> int:
+    q = f"?status={urllib.parse.quote(a.status)}" if a.status else ""
+    for j in api("GET", "/jobs", query=q).get("jobs", []):
+        print(f"{j['id']}  {j['status']:10s}  {j['type']:8s}  "
+              f"{j['repo']:20s}  {j['engine_selected'] or '-'}")
+    return 0
+
+
+def cmd_cancel(a) -> int:
+    payload = api("POST",
+                  f"/jobs/{urllib.parse.quote(a.job_id, safe='')}/cancel")
+    print(payload["message"])
+    return 0
+
+
+def cmd_manifest(a) -> int:
+    m = api("GET", f"/jobs/{urllib.parse.quote(a.job_id, safe='')}/manifest")
+    print(json.dumps(m, indent=2))
+    return 0
+
+
+def cmd_attention(a) -> int:
+    jobs = api("GET", "/attention").get("jobs", [])
+    if not jobs:
+        print("attention queue empty")
+        return 0
+    for j in jobs:
+        acked = "acked" if j["acked"] else "UNACKED"
+        print(f"{j['id']}  elapsed={j['elapsed_min']:.1f}m  {acked}  "
+              f"{j['type']:8s}  {j['engine_selected'] or '-'}  "
+              f"provider={j.get('provider')}")
+    return 0
+
+
+def cmd_ack(a) -> int:
+    payload = api("POST",
+                  f"/jobs/{urllib.parse.quote(a.job_id, safe='')}/ack")
+    print(payload["message"])
+    return 0
+
+
+def cmd_spend(a) -> int:
+    s = api("GET", "/spend")
+    print(f"openrouter rolling {s['cap_window_days']:.0f}d spend: "
+          f"${s['rolling_usd']:.4f} (cap ${s['cap_usd']:.2f}) — cash truth "
+          f"from key-usage deltas")
+    if s.get("recent"):
+        print("recent token estimates (attribution only, not cap spend):")
+        for r in s["recent"]:
+            print(f"  {r['job_id']}  prompt={r['prompt_tokens']} "
+                  f"completion={r['completion_tokens']} reqs={r['requests']}  "
+                  f"est=${r['estimated_usd']:.4f}")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="agentctl")
+    ap.add_argument("--client", default=None,
+                    help="API client identity from config/api.yaml "
+                         "(default: its default_client)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("submit")
+    s.add_argument("--type", default="coding",
+                   choices=["coding", "artifact", "research", "data"])
+    s.add_argument("--repo", default="scratch")
+    s.add_argument("--base", default="main")
+    s.add_argument("--task-file")
+    s.add_argument("--task")
+    s.add_argument("--engine", default="auto")
+    s.add_argument("--provider", default="supergrok",
+                   help="supergrok (default), openrouter, or auto")
+    s.add_argument("--budget-usd", type=float)
+    s.add_argument("--max-minutes", type=int)
+    s.add_argument("--idempotency-key")
+    s.add_argument("--ref", default=None,
+                   help="git ref for host-seeded repos: branch/tag or pull/N/head")
+    s.set_defaults(fn=cmd_submit)
+
+    s = sub.add_parser("status"); s.add_argument("job_id"); s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("logs"); s.add_argument("job_id"); s.add_argument("--tail", type=int, default=0); s.set_defaults(fn=cmd_logs)
+    s = sub.add_parser("list"); s.add_argument("--status", default=None); s.set_defaults(fn=cmd_list)
+    s = sub.add_parser("cancel"); s.add_argument("job_id"); s.set_defaults(fn=cmd_cancel)
+    s = sub.add_parser("manifest"); s.add_argument("job_id"); s.set_defaults(fn=cmd_manifest)
+    s = sub.add_parser("attention"); s.set_defaults(fn=cmd_attention)
+    s = sub.add_parser("ack"); s.add_argument("job_id"); s.set_defaults(fn=cmd_ack)
+    s = sub.add_parser("spend"); s.set_defaults(fn=cmd_spend)
+
+    a = ap.parse_args()
+    cfg = api_config()
+    client = a.client or cfg.get("default_client") or "atlas"
+    token = (cfg.get("clients") or {}).get(client)
+    if not token or str(token).startswith("REPLACE"):
+        print(f"error: no usable token for client '{client}' in "
+              f"config/api.yaml", file=sys.stderr)
+        return 2
+    global BASE, TOKEN
+    BASE = base_url(cfg)
+    TOKEN = str(token)
+    return a.fn(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

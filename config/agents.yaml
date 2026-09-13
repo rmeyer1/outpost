@@ -1,0 +1,75 @@
+# Outpost — Phase 1 dispatcher config
+# All paths are relative to the outpost root on the host (~/outpost).
+
+# Harness registry: which worker engines exist and which are enabled.
+engines:
+  hermes:
+    enabled: true
+    default: true
+    lanes: [general, coding, artifact, research]
+    model: "grok-4.6"
+    # Model access is brokered: the runner starts `hermes proxy` on the host
+    # (xai-oauth subscription). The container never sees raw credentials.
+    proxy_provider: "xai"
+  grok-build:
+    enabled: true
+    lanes: [coding]
+    model: "grok-4.6"
+    # xAI grok CLI (pinned version below, baked into the worker image at
+    # grok_bin). Runs headless in-container; model access is brokered through
+    # the per-job proxy like hermes, so no xAI credential is needed
+    # in-container. Select with --engine grok-build; auto still defaults
+    # to hermes.
+    grok_bin: "/usr/local/bin/grok"
+    grok_version: "1.0.30"
+
+# Repositories a job may clone inside its container.
+# 'scratch' = fresh `git init` inside the container, no network clone.
+# host_seeded: private repos the HOST clones (it holds the GitHub
+# credential) and injects into the container via `container cp`. The
+# clone_url never enters the container; the container only ever sees the
+# public allowlist entry string.
+repos:
+  allowlist:
+    - scratch
+    - https://github.com/rmeyer1/rain-room.git
+  host_seeded:
+    https://github.com/rmeyer1/rain-room.git:
+      clone_url: git@github.com:rmeyer1/rain-room.git
+
+# Hard limits (enforced by the controller/runner, not advisory).
+limits:
+  max_workers: 2
+  default_max_minutes: 30
+  default_budget_usd: 2.0
+  container_cpus: 4
+  container_memory: "8g"
+  container_disk: "20g"
+
+# Per-job model proxy (host side). The container reaches the proxy at
+# proxy.container_host; the proxy binds proxy.bind on the host.
+proxy:
+  provider: "xai"
+  # Credential boundary: the Hermes proxy (which attaches the real upstream
+  # credential) binds ONLY to 127.0.0.1. A per-job broker (service/proxy_broker.py)
+  # binds 0.0.0.0 on broker_port = base_port + 1000 + hash for the container
+  # subnet (gateway 192.168.64.1) and relays only requests carrying the random
+  # per-job bearer token. Exposure window = job lifetime; the proxy only
+  # attaches credentials, never discloses them.
+  bind: "0.0.0.0"
+  container_host: "192.168.64.1"
+  base_port: 18645           # per-job port = base_port + (hash(job_id) % 200)
+
+# Worker image for `container run`.
+image:
+  name: "ca-worker:latest"
+  build_dir: "images/worker"
+
+paths:
+  state: "state/agents.db"
+  jobs: "jobs"
+  artifacts: "artifacts"
+  logs: "logs"
+
+# Where the Hermes venv lives on the host (host side only).
+hermes_venv: "~/.hermes/hermes-agent/venv"

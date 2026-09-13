@@ -1,0 +1,24 @@
+# Cloud-agent worker image (Linux/arm64).
+# Built once on the Mac mini:  container build -t ca-worker:latest .
+# Pinned python base; hermes-agent installed from the vendored source tree
+# (exact-pinned deps in its pyproject.toml).
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Vendored hermes-agent source (node_modules/venv/web/.git excluded at sync).
+COPY hermes-agent /opt/hermes-agent
+RUN pip install --no-cache-dir /opt/hermes-agent
+
+COPY entrypoint.py /opt/ca/entrypoint.py
+RUN chmod +x /opt/ca/entrypoint.py
+
+WORKDIR /work
+ENTRYPOINT ["python3", "/opt/ca/entrypoint.py"]

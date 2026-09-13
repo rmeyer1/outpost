@@ -1,0 +1,27 @@
+# Outpost dispatcher API — COPY to api.yaml and fill in real tokens.
+#
+#   cp config/api.yaml.example config/api.yaml
+#   python3 -c "import secrets; print(secrets.token_urlsafe(32))"  # per client
+#   chmod 600 config/api.yaml
+#
+# NEVER commit api.yaml. Tokens live only on the host (mode 600).
+
+# Local port the API listens on.
+port: 18443
+
+# Bind address: "auto" resolves the Tailscale IPv4 via `tailscale ip -4` at
+# startup (never 0.0.0.0). Use "127.0.0.1" only when fronted by
+# `tailscale serve` for HTTPS termination.
+bind: auto
+
+# Optional: override the base URL clients (agentctl) use, e.g. the public
+# tailscale-serve URL. When null, agentctl derives http://<bind>:<port>.
+base_url: null
+
+# agentctl's default client when --client is not given.
+default_client: atlas
+
+# Per-client bearer tokens. Generate with secrets.token_urlsafe(32).
+clients:
+  atlas: "REPLACE-ME"
+  grok-bot: "REPLACE-ME"
