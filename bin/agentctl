@@ -57,7 +57,10 @@ def base_url(cfg: dict) -> str:
     if bind in ("localhost", "127.0.0.1"):
         host = "127.0.0.1"
     elif bind == "auto":
-        host = tailscale_ip()
+        try:
+            host = tailscale_ip()
+        except RuntimeError:
+            host = "127.0.0.1"
     else:
         host = str(cfg.get("bind"))
     return f"http://{host}:{cfg.get('port', 18443)}"

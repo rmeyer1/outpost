@@ -1,5 +1,9 @@
-# Cloud agents — Phase 1 dispatcher config
-# All paths are relative to the cloud-agents root on the Mac (~/cloud-agents).
+# Outpost dispatcher config.
+# All paths are relative to this installation's root. Each install is
+# standalone: it does not contact any other Outpost host.
+#
+# worker.backend: apple | docker. Empty string = platform default
+# (darwin → apple, linux → docker). Explicit value always wins.
 
 # Harness registry: which worker engines exist and which are enabled.
 engines:
@@ -64,6 +68,10 @@ repos:
     https://github.com/rmeyer1/rain-room.git:
       clone_url: git@github.com:rmeyer1/rain-room.git
 
+worker:
+  # apple | docker. Empty = platform default.
+  backend: ""
+
 # Hard limits (enforced by the controller/runner, not advisory).
 limits:
   max_workers: 2
@@ -74,7 +82,8 @@ limits:
   container_disk: "20g"
 
 # Per-job model proxy (host side). The container reaches the proxy at
-# proxy.container_host; the proxy binds proxy.bind on the Mac.
+# proxy.container_host (Apple container subnet). Docker backend rewrites
+# this to host.docker.internal.
 proxy:
   provider: "xai"
   # Credential boundary: the Hermes proxy (which attaches the real upstream
@@ -87,7 +96,7 @@ proxy:
   container_host: "192.168.64.1"
   base_port: 18645           # per-job port = base_port + (hash(job_id) % 200)
 
-# Worker image for `container run`.
+# Worker image for `container run` / `docker run`.
 image:
   name: "ca-worker:latest"
   build_dir: "images/worker"
@@ -98,5 +107,7 @@ paths:
   artifacts: "artifacts"
   logs: "logs"
 
-# Where the Hermes venv lives on the Mac (host side only).
+# Host-side Hermes venv (SuperGrok proxy only). The in-container hermes
+# engine is baked into the worker image and does not need this path.
+# Leave empty on Linux installs that only use OpenRouter.
 hermes_venv: "/Users/server/.hermes/hermes-agent/venv"

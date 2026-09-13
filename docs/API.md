@@ -6,31 +6,32 @@ Tailnet client — Atlas, the grok bot harness, future tooling — speaks this A
 
 ## Base URL and auth
 
-- **Base URL:** `http://100.101.54.59:18443` (the Mac's Tailscale IPv4;
-  resolve dynamically with `tailscale ip -4`, do not hardcode the IP).
+- **Base URL:** this installation's API (`http://<host>:18443`). On a
+  tailnet, resolve dynamically with `tailscale ip -4` on **this** host;
+  do not hardcode the IP. Each Outpost install is independent.
 - **Auth:** every endpoint requires `Authorization: Bearer <token>`
   (constant-time comparison). Missing/invalid token → `401 {"error":
   "unauthorized"}` with no information leakage.
-- Tokens live in `~/cloud-agents/config/api.yaml` (mode `600`) under
-  `clients:` — one token per client (`atlas`, `grok-bot`).
+- Tokens live in `config/api.yaml` (mode `600`) under `clients:` — one
+  token per client (`atlas`, `grok-bot`).
 
 ### Adding a client
 
-On the Mac (never print the token anywhere):
+On this host (never print the token anywhere):
 
 ```bash
 python3 - <<'EOF'
 import secrets, yaml
-p = "/Users/server/cloud-agents/config/api.yaml"
+p = "config/api.yaml"  # relative to this Outpost checkout
 cfg = yaml.safe_load(open(p))
 cfg["clients"]["new-client"] = secrets.token_urlsafe(32)
 yaml.safe_dump(cfg, open(p, "w"))
 EOF
-chmod 600 /Users/server/cloud-agents/config/api.yaml
+chmod 600 config/api.yaml
 ```
 
-No API restart is needed — tokens are read at startup only, so **restart
-`com.cloudagents.api`** after changing them:
+Tokens are re-read when `api.yaml` changes. To be safe, restart the API:
+Linux `sudo systemctl restart outpost`; macOS
 `launchctl kickstart -k gui/$(id -u)/com.cloudagents.api`.
 
 ## Endpoints
@@ -82,7 +83,7 @@ string (e.g. `https://github.com/rmeyer1/rain-room.git`) in `CA_REPO`. When
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"type":"artifact","repo":"scratch","task":"build an Excel model","idempotency_key":"x1"}' \
-  http://100.101.54.59:18443/jobs
+  http://<this-host>:18443/jobs
 ```
 
 ### `GET /jobs?status=` — list
@@ -150,7 +151,7 @@ Binary download with `Content-Disposition: attachment`. Serves:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" \
-  -OJ http://100.101.54.59:18443/jobs/JOB_ID/artifacts/model.xlsx
+  -OJ http://<this-host>:18443/jobs/JOB_ID/artifacts/model.xlsx
 ```
 
 ## Security model
@@ -179,7 +180,9 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ## Operations
 
-- Launch agent: `com.cloudagents.api` (keep-alive, restarts on crash/boot).
-- Logs: `~/cloud-agents/build/api.log` (one line per request: client, method,
-  path, status, ms — never tokens).
-- Health check: `curl -H "Authorization: Bearer $TOKEN" http://100.101.54.59:18443/spend`
+- Linux: `outpost.service` (keep-alive via systemd). macOS:
+  `com.cloudagents.api`.
+- Logs: systemd journal (`journalctl -u outpost`) or the API process
+  stdout (one line per request: client, method, path, status, ms —
+  never tokens).
+- Health check: `curl -H "Authorization: Bearer $TOKEN" http://<this-host>:18443/spend`

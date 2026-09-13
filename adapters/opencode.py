@@ -36,10 +36,17 @@ def _container_bin() -> str:
     """Resolve the container CLI the same way service/runner.py does."""
     import os
     import shutil
+    import sys
     from pathlib import Path
-    return (os.environ.get("CA_CONTAINER_BIN")
-            or shutil.which("container")
-            or str(Path.home() / "cloud-agents" / "rt" / "bin" / "container"))
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "service"))
+        from containers import container_bin
+        return container_bin()
+    except Exception:
+        return (os.environ.get("CA_CONTAINER_BIN")
+                or shutil.which("docker")
+                or shutil.which("container")
+                or str(Path.home() / "cloud-agents" / "rt" / "bin" / "container"))
 
 
 def probe(config: dict) -> tuple[bool, str]:

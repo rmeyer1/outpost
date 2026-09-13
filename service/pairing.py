@@ -8,16 +8,15 @@ Flow:
   2. The user reads the code to their assistant (Atlas) in chat. The code
      is public — it is not a secret.
   3. The assistant approves server-side (`agentctl pair-approve <code>` on
-     the Mac, authenticated with the master token which never leaves the
-     Mac). Approval mints a random bearer token, adds it as a new client in
+     this host, authenticated with the master token which never leaves the
+     host). Approval mints a random bearer token, adds it as a new client in
      config/api.yaml (mode 600), and stages it for one-time pickup.
   4. The dashboard polls GET /pair/status?code=... ; once approved it
      receives the token exactly once, saves it to localStorage, and the
      pairing record is consumed.
 
 Pairing state lives in state/pairings.json. Nothing secret ever crosses
-chat: the code is public, the token travels only Mac -> device over the
-tailnet.
+chat: the code is public, the token travels only this host -> device.
 """
 from __future__ import annotations
 
