@@ -1,12 +1,21 @@
 #!/bin/bash
-# Weekly cloud-agents disk cleanup. Safe to run anytime; only removes:
-#  1. ~/cloud-agents-backup-* dirs beyond the 2 newest
+# Weekly Outpost disk cleanup. Safe to run anytime; only removes:
+#  1. ~/cloud-agents-backup-* dirs beyond the 2 newest (legacy Mac path)
 #  2. DANGLING container images (tagged images untouched; never --all)
 #  3. Stale agent build artifacts in /tmp older than 7 days
 set -u
 
-CBIN="$HOME/cloud-agents/rt/bin/container"
-DATA_VOL="/System/Volumes/Data"
+if command -v docker >/dev/null 2>&1; then
+  CBIN="$(command -v docker)"
+elif [ -x "$HOME/cloud-agents/rt/bin/container" ]; then
+  CBIN="$HOME/cloud-agents/rt/bin/container"
+else
+  CBIN=""
+fi
+DATA_VOL="/"
+if [ -d /System/Volumes/Data ]; then
+  DATA_VOL="/System/Volumes/Data"
+fi
 
 avail_before=$(df -k "$DATA_VOL" 2>/dev/null | tail -1 | awk '{print $4}')
 
@@ -16,8 +25,12 @@ ls -dt "$HOME"/cloud-agents-backup-* 2>/dev/null | tail -n +3 | while IFS= read 
 done
 
 # 2. Dangling container images only
-if [ -x "$CBIN" ]; then
-  "$CBIN" image prune < /dev/null >/dev/null 2>&1 || true
+if [ -n "$CBIN" ] && [ -x "$CBIN" ]; then
+  if [ "$(basename "$CBIN")" = "docker" ]; then
+    "$CBIN" image prune -f < /dev/null >/dev/null 2>&1 || true
+  else
+    "$CBIN" image prune < /dev/null >/dev/null 2>&1 || true
+  fi
 fi
 
 # 3. Stale /tmp agent artifacts

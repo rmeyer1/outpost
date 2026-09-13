@@ -6,7 +6,7 @@ Contract (shared by every adapter):
   - parse_result(out_dir: Path) -> dict  (result contract)
 
 The agent process runs INSIDE the job container. Model access is brokered:
-the runner starts `hermes proxy` on the Mac host (xai-oauth subscription);
+the runner starts `hermes proxy` on the Outpost host (xai-oauth subscription);
 the container gets only the proxy URL + a placeholder client token, which the
 proxy replaces with the real credential per request. The host's
 ~/.hermes/auth.json is never mounted into the container.
@@ -25,11 +25,23 @@ JOB_CLIENT_TOKEN = "ca-job-token"
 
 
 def probe(config: dict) -> tuple[bool, str]:
-    import shutil
-    hermes_bin = Path(config["hermes_venv"]) / "bin" / "hermes"
-    if not hermes_bin.exists():
-        return False, f"hermes binary missing at {hermes_bin}"
-    return True, f"hermes adapter ready (model={config['engines']['hermes']['model']})"
+    hermes_bin = Path(config.get("hermes_venv") or "") / "bin" / "hermes"
+    model = (config.get("engines") or {}).get("hermes", {}).get("model", "")
+    if hermes_bin.exists():
+        return True, f"hermes adapter ready (model={model})"
+    # Host venv is only required for the SuperGrok *proxy*. The in-container
+    # hermes engine is baked into the worker image. On docker/linux installs
+    # without a host venv, OpenRouter jobs still run; SuperGrok fails later
+    # at proxy start if the operator did not install hermes on the host.
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "service"))
+        from containers import resolve_backend
+        if resolve_backend(config) == "docker":
+            return True, f"hermes adapter ready (in-image; model={model})"
+    except Exception:
+        pass
+    return False, f"hermes binary missing at {hermes_bin}"
 
 
 def container_env(job: dict, engine_cfg: dict, proxy_url: str, config: dict) -> dict:

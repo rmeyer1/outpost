@@ -5,12 +5,15 @@ Usage: python3 service/runner.py <job-id>
 One OS process per job, spawned by the controller. Flow:
   1. probe + select engine (registry)
   2. start per-job model proxy on the host (hermes proxy, xai-oauth)
-  3. container run --detach with the job env (no host mounts, ever)
+  3. backend.run_job (apple: no mounts; docker: /work and /out binds)
   4. poll until exit / timeout / cancel_requested
-  5. copy /out from the container, write manifest, record result
+  5. collect /out, write manifest, record result
   6. ALWAYS: container rm -f + proxy shutdown (kill switch)
 
 Hard limits enforced here: wall time (max_minutes), CPU, memory.
+
+Container operations go through service/containers.py (apple | docker).
+This process never contacts another Outpost host.
 """
 from __future__ import annotations
 
@@ -40,6 +43,7 @@ import adapters.registry as registry  # noqa: E402
 import openrouter as or_provider  # noqa: E402
 import pricing  # noqa: E402
 from timeouts import load_timeouts  # noqa: E402
+from containers import get_backend  # noqa: E402
 
 
 def load_config() -> dict:
@@ -53,7 +57,35 @@ def load_spend() -> dict:
 
 
 def container_bin() -> str:
-    return os.environ.get("CA_CONTAINER_BIN", str(Path.home() / "cloud-agents" / "rt" / "bin" / "container"))
+    """CLI path for the configured backend (CA_CONTAINER_BIN wins)."""
+    from containers import container_bin as _cb
+    return _cb()
+
+
+def _rewrite_proxy_for_docker(proxy_url: str) -> str:
+    """Point the in-container agent at the Docker host gateway.
+
+    Apple's container subnet uses proxy.container_host (typically
+    192.168.64.1). Docker Linux containers reach the host via
+    host.docker.internal (injected with --add-host). Loopback,
+    already-rewritten URLs, and public HTTPS endpoints (OpenRouter
+    direct) are left alone.
+    """
+    if not proxy_url:
+        return proxy_url
+    from urllib.parse import urlparse, urlunparse
+    p = urlparse(proxy_url)
+    host = p.hostname or ""
+    if not host or host in ("host.docker.internal", "127.0.0.1", "localhost"):
+        return proxy_url
+    # Direct OpenRouter (and any other public TLS endpoint) is reached
+    # from inside the container as-is — no host broker.
+    if p.scheme == "https":
+        return proxy_url
+    netloc = "host.docker.internal"
+    if p.port:
+        netloc = f"{netloc}:{p.port}"
+    return urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
 
 
 def run(cmd, **kw):
@@ -120,18 +152,11 @@ def wait_tcp(host: str, port: int, timeout: float = 20.0) -> bool:
 
 
 def container_running(cbin: str, name: str) -> bool:
+    from containers import _inspect_is_running
     r = run([cbin, "inspect", name])
     if r.returncode != 0:
         return False
-    try:
-        info = json.loads(r.stdout)
-        # inspect returns a list; status lives at [0].status.state
-        item = info[0] if isinstance(info, list) and info else info
-        status = item.get("status") or {}
-        state = str(status.get("state") or item.get("state") or "").lower()
-        return state in ("running", "created", "starting")
-    except Exception:
-        return True  # inspect worked but schema unknown -> assume alive
+    return _inspect_is_running(r.stdout, backend="")
 
 
 def kill_container(cbin: str, name: str) -> None:
@@ -141,7 +166,7 @@ def kill_container(cbin: str, name: str) -> None:
 def main(job_id: str) -> int:
     config = load_config()
     spend_cfg = load_spend()
-    cbin = container_bin()
+    backend = get_backend(config)
     db = connect(ROOT / config["paths"]["state"])
     job = get_job(db, job_id)
     if not job or job["status"] not in ("preparing", "running"):
@@ -266,26 +291,49 @@ def main(job_id: str) -> int:
             register_secret(proxy_url)
             register_secret(job_token)
 
-        # 4. launch the disposable container (no mounts — repo is cloned inside)
+        # 4. launch the disposable container.
+        # Apple backend: no host mounts; repo is cloned inside (or `cp`'d).
+        # Docker backend: bind-mounts per-job /work and /out so the host
+        # can seed and collect without `docker cp`.
         env = adapter.container_env(job, engine_cfg, proxy_url, config)
         # The container's bearer must be the real per-job token the broker
         # expects (replaces the adapter's placeholder).
         env["CA_CLIENT_TOKEN"] = job_token
         register_secret(env.get("CA_CLIENT_TOKEN", ""))
         if seed_dir:
-            # Private repo: the host injected the tree; the entrypoint
+            # Private repo: the host cloned the tree; the entrypoint
             # waits for /work/repo instead of cloning.
             env["CA_HOST_SEED"] = "1"
-        cmd = [cbin, "run", "-d", "--name", name,
-               "-c", str(config["limits"]["container_cpus"]),
-               "-m", str(config["limits"]["container_memory"])]
-        for k, v in env.items():
-            cmd += ["-e", f"{k}={v}"]
-        cmd += ["--label", f"ca.job={job_id}", config["image"]["name"]]
-        r = run(cmd, timeout=120)
+        # Docker: containers reach the host broker via host.docker.internal
+        # (added as --add-host host.docker.internal:host-gateway). Rewrite
+        # the Apple-container-subnet host if the backend is docker.
+        if backend.name == "docker":
+            env["CA_PROXY_URL"] = _rewrite_proxy_for_docker(env.get("CA_PROXY_URL", ""))
+        work_stage = job_dir / "work"
+        work_stage.mkdir(parents=True, exist_ok=True)
+        out_stage.mkdir(parents=True, exist_ok=True)
+        if seed_dir and backend.seed_before_start():
+            spr = backend.place_seed(name=name, seed_dir=seed_dir, work_dir=work_stage)
+            if getattr(spr, "returncode", 0) != 0:
+                raise RuntimeError(
+                    f"seed copy into work dir failed: "
+                    f"{(getattr(spr, 'stderr', '') or '')[-300:]}")
+            log("seed", "repo tree staged on host (bind-mounted /work)")
+            shutil.rmtree(seed_dir, ignore_errors=True)
+            seed_dir = None
+        r = backend.run_job(
+            name=name,
+            image=config["image"]["name"],
+            env=env,
+            work_dir=work_stage,
+            out_dir=out_stage,
+            cpus=config["limits"]["container_cpus"],
+            memory=config["limits"]["container_memory"],
+            label=f"ca.job={job_id}",
+        )
         if r.returncode != 0:
-            raise RuntimeError(f"container run failed: {r.stderr.strip()[-500:]}")
-        log("container", f"started {name}")
+            raise RuntimeError(f"container run failed: {(r.stderr or '').strip()[-500:]}")
+        log("container", f"started {name} backend={backend.name}")
 
         # Stream the agent's session output into the job log so the
         # dashboard shows a live transcript. Daemon thread, fully
@@ -310,8 +358,7 @@ def main(job_id: str) -> int:
             try:
                 while not stop_agent_tail.is_set():
                     try:
-                        r = run([cbin, "logs", "-n", "300", name],
-                                timeout=30)
+                        r = backend.logs(name, tail=300)
                     except Exception:
                         break
                     if r.returncode == 0 and r.stdout:
@@ -346,15 +393,15 @@ def main(job_id: str) -> int:
 
         threading.Thread(target=_tail_agent_logs, daemon=True).start()
 
-        # 4b. inject the host-seeded repo tree. The entrypoint is already
-        # waiting for /work/repo/.git (up to 120s).
+        # 4b. inject the host-seeded repo tree (Apple: container cp after
+        # start; Docker already bind-mounted it in step 4).
         if seed_dir:
-            cp = run([cbin, "cp", seed_dir + "/.", f"{name}:/work/repo"],
-                     timeout=300)
+            cp = backend.place_seed(name=name, seed_dir=seed_dir,
+                                    work_dir=work_stage)
             if cp.returncode != 0:
                 raise RuntimeError(
                     f"seed copy into container failed: "
-                    f"{cp.stderr.strip()[-300:]}")
+                    f"{(cp.stderr or '').strip()[-300:]}")
             log("seed", "repo tree injected into container")
             shutil.rmtree(seed_dir, ignore_errors=True)
             seed_dir = None
@@ -399,28 +446,20 @@ def main(job_id: str) -> int:
                            finished_at=time.time(),
                            error=f"wall-time budget exceeded ({max_minutes}m)")
                 return 4
-            if not container_running(cbin, name):
+            if not backend.is_running(name):
                 log("warn", "container exited before writing result")
                 break
-            er = run([cbin, "exec", name, "test", "-f", "/out/result.json"], timeout=15)
-            if er.returncode == 0:
-                # copy to a scratch spot and check the job_id before trusting it
-                chk_path = job_dir / "result.check.json"
-                cr = run([cbin, "cp", f"{name}:/out/result.json", str(chk_path)],
-                         timeout=30)
-                if cr.returncode == 0:
-                    try:
-                        chk = json.loads(chk_path.read_text())
-                    except Exception:
-                        chk = {}
-                    if chk.get("job_id") == job_id:
-                        result_seen = True
-                        log("container", "result.json detected")
-                        break
-                    log("warn", f"ignoring stale result.json "
-                               f"(job_id={chk.get('job_id')!r}) — removing it")
-                    run([cbin, "exec", name, "rm", "-f", "/out/result.json"],
-                        timeout=15)
+            chk_path = job_dir / "result.check.json"
+            chk = backend.read_result_json(
+                name=name, out_dir=out_stage, scratch_path=chk_path)
+            if chk is not None:
+                if chk.get("job_id") == job_id:
+                    result_seen = True
+                    log("container", "result.json detected")
+                    break
+                log("warn", f"ignoring stale result.json "
+                           f"(job_id={chk.get('job_id')!r}) — removing it")
+                backend.discard_result(name=name, out_dir=out_stage)
             # Tier 2 mid-job spend check: poll the key-usage endpoint; kill
             # the job the moment the rolling cap is breached.
             if provider == "openrouter" and or_api_key and \
@@ -436,15 +475,15 @@ def main(job_id: str) -> int:
             time.sleep(5)
 
         # 6. collect logs + /out
-        rl = run([cbin, "logs", name], timeout=60)
+        rl = backend.logs(name)
         with open(log_path, "a") as f:
             for line in (rl.stdout or "").splitlines():
                 f.write(json.dumps({"ts": time.time(), "kind": "container",
                                     "msg": redact(line)}) + "\n")
         out_stage.mkdir(parents=True, exist_ok=True)
-        rc = run([cbin, "cp", f"{name}:/out/.", str(out_stage)], timeout=120)
+        rc = backend.collect_out(name=name, out_dir=out_stage, dest=out_stage)
         if rc.returncode != 0:
-            log("warn", f"container cp /out failed: {rc.stderr.strip()[-300:]}")
+            log("warn", f"collect /out failed: {(rc.stderr or '').strip()[-300:]}")
 
         # 7. parse + manifest
         result = adapter.parse_result(out_stage)
@@ -586,7 +625,7 @@ def main(job_id: str) -> int:
                     pass
         # Kill switch: container, broker, and proxy MUST NOT survive the job.
         try:
-            kill_container(cbin, name)
+            backend.remove(name)
         except Exception:
             pass
         for proc in (broker_proc, proxy_proc):

@@ -85,7 +85,16 @@ def resolve_bind(cfg: dict) -> str:
         return os.environ["CA_API_BIND"]
     bind = str(cfg.get("bind", "auto")).lower()
     if bind == "auto":
-        return tailscale_ip()
+        # Tailscale is optional. Prefer the tailnet address when present
+        # so the API stays off the LAN; otherwise loopback. Operators who
+        # want LAN access set bind to a specific interface address.
+        try:
+            return tailscale_ip()
+        except RuntimeError:
+            print("api: Tailscale not available — binding 127.0.0.1 "
+                  "(set bind in config/api.yaml for LAN access)",
+                  file=sys.stderr, flush=True)
+            return "127.0.0.1"
     if bind in ("localhost", "127.0.0.1"):
         return "127.0.0.1"
     return str(cfg.get("bind"))

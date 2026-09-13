@@ -1,8 +1,10 @@
 # Cloud Agents
 
-Self-hosted "cloud agents" running on the Mac mini (`robs-mac-mini-1`). Any
-authorized tool on the tailnet — Atlas, the grok bot harness, future clients —
-can delegate long or heavy tasks here instead of doing the work inline.
+Self-hosted "cloud agents". Each Outpost installation is a complete,
+standalone dispatcher (API, runner, workers) — a Mac mini, a Raspberry Pi,
+or any Linux host with Docker. Installations do not communicate with each
+other. Any authorized client — Atlas, the grok bot harness, future tools —
+submits jobs to whichever installation's API it chooses.
 
 This README is written for **client tools**. It tells you what the system is
 and exactly how to use it. (Operator details live in `docs/API.md`; the full
@@ -10,17 +12,18 @@ design is in the Cloud Agents design PDF.)
 
 ## What this is
 
-You submit a task. A disposable, isolated worker container spins up on the
-Mac, clones the repo inside itself, runs an AI coding/generalist harness
-against your task, commits the result to a branch, and is destroyed. You get
-back logs, a manifest, a repo bundle, and any artifacts the task produced
-(e.g. an `.xlsx` file for a modeling task).
+You submit a task. A disposable, isolated worker container spins up on
+**this** Outpost host, clones the repo inside itself, runs an AI
+coding/generalist harness against your task, commits the result to a
+branch, and is destroyed. You get back logs, a manifest, a repo bundle,
+and any artifacts the task produced (e.g. an `.xlsx` file for a modeling
+task).
 
 Each job is fully isolated:
 
 - One container per job; nothing persists between jobs except what the job
   explicitly produces.
-- The container never sees the Mac's home directory, SSH keys, or any
+- The container never sees the host's home directory, SSH keys, or any
   credential. Model access goes through a host-side broker that attaches the
   real credential server-side.
 - Repos are cloned *inside* the container. Only branches, bundles,
@@ -28,16 +31,17 @@ Each job is fully isolated:
 
 ## Connecting
 
-The dispatcher exposes a Tailnet-only HTTP API. It is the primary interface;
+The dispatcher exposes an HTTP API on this installation (Tailscale address
+when available, otherwise loopback). It is the primary interface;
 `bin/agentctl` is just a thin client over it.
 
-- **Base URL:** `http://100.101.54.59:18443` — the Mac's Tailscale IPv4.
-  Resolve it dynamically with `tailscale ip -4`; do not hardcode the IP.
+- **Base URL:** this installation (`http://<host>:18443`). On a tailnet,
+  resolve it dynamically with `tailscale ip -4` on **that** host; do not
+  hardcode the IP. Tailscale is optional.
 - **Auth:** every request needs `Authorization: Bearer <token>`.
-  Your token is provisioned by the human operator (stored mode-600 in
-  `~/cloud-agents/config/api.yaml` on the Mac). Missing/invalid token → 401.
-- There is no LAN or internet exposure: the API binds the Tailscale address
-  only. Worker containers cannot reach it.
+  Your token is provisioned by the operator of that installation (stored
+  mode-600 in `config/api.yaml`). Missing/invalid token → 401.
+- The API never binds `0.0.0.0`. Worker containers cannot reach it.
 
 ## Delegating work: the job lifecycle
 
@@ -124,16 +128,108 @@ curl -s -H "Authorization: Bearer $TOKEN" -OJ $API/jobs/$JOB/artifacts/model.xls
 
 - Your token identifies your client; it carries no access beyond the API.
 - You never see, handle, or need the model credentials — SuperGrok and
-  OpenRouter keys stay server-side on the Mac and never appear in any API
-  response or log.
+  OpenRouter keys stay server-side on that installation and never appear
+  in any API response or log.
 - Keep your bearer token secret. If it leaks, ask the operator to rotate it.
 
 ## For the human operator
 
-- `bin/agentctl` — same operations from the Mac's shell.
+- `bin/agentctl` — same operations from this host's shell.
 - `docs/API.md` — full endpoint reference, token provisioning, TLS notes.
-- Launch agents: `com.cloudagents.api` (the API), `com.cloudagents.controller`
+- Linux: `outpost.service` (systemd) via `./bin/install.sh`.
+- macOS: `com.cloudagents.api` (the API), `com.cloudagents.controller`
   (the dispatcher), `com.cloudagents.container-system`.
-- Source of truth for this codebase:
-  `~/workspace/goals/self-hosted-cloud-agents-on-the-mac-mini/build/cloud-agents/`
-  (mirrored to `~/cloud-agents/` on the Mac).
+- Each Outpost checkout is a complete, standalone installation.
+
+## Install on a Raspberry Pi
+
+The Pi is a **first-class Outpost host**. After install it has its own
+dispatcher, API, runner, and workers. It does **not** communicate with any
+other Outpost host — the Mac mini can be powered off or decommissioned and
+the Pi keeps working. An agent harness submits jobs to whichever
+installation's API it chooses.
+
+Live Docker / Pi verification of this path is still pending on a real
+Docker host; the steps below are what `bin/install.sh` implements.
+
+### 1. 64-bit Pi OS prep
+
+- Raspberry Pi OS **64-bit** (Debian Bookworm or later). 32-bit is not
+  supported — the worker image only builds for `linux/arm64` and
+  `linux/amd64`.
+- A Pi 4 or 5 with **4 GB RAM minimum** (8 GB is more comfortable).
+- Network so the host can pull `python:3.12-slim` and the pinned CLIs.
+- Tailscale is **optional**. The API binds the tailnet address when
+  `tailscale ip -4` works; otherwise it binds `127.0.0.1`. You do not
+  need Tailscale for a local or LAN install (`bind:` in
+  `config/api.yaml`).
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git python3 python3-yaml
+git clone https://github.com/rmeyer1/outpost.git
+cd outpost
+```
+
+### 2. Install
+
+```bash
+./bin/install.sh
+```
+
+The script is idempotent (safe to re-run). It will:
+
+- Install Docker Engine from the official Docker apt repo if it is missing.
+- `docker build -t ca-worker:latest images/worker` (Containerfile is
+  multi-arch; `python:3.12-slim` plus arm64 node/goose/grok binaries).
+- Generate `config/api.yaml` from the example with **fresh random tokens**
+  (never hardcoded; mode 600). Existing `api.yaml` is left untouched.
+- Set `worker.backend: docker` and Pi-sized limits (`max_workers: 1`,
+  `container_memory: 2g`).
+- Install and start `service/outpost.service` via systemd.
+
+On macOS the same script prints launchd notes and does not write
+LaunchAgents.
+
+### 3. Dashboard URL
+
+Printed at the end of the installer:
+
+- Local: `http://127.0.0.1:18443/dashboard`
+- Tailnet (if Tailscale is up): `http://<tailscale-ipv4>:18443/dashboard`
+
+Tokens are in `config/api.yaml` and are never printed. Pair a dashboard
+from the UI, or copy a client token onto the device yourself.
+
+### 4. Submit the first job
+
+From the Pi (or any client that can reach this API):
+
+```bash
+bin/agentctl --client atlas submit \
+  --type coding --repo scratch \
+  --task "Write hello.py that prints hi" \
+  --idempotency-key pi-first-job-1
+bin/agentctl status <job-id>
+```
+
+Or `POST /jobs` against this installation's base URL with
+`Authorization: Bearer <token>`. Point the harness at **this** API — not
+another host's.
+
+### 5. Size worker concurrency for the Pi's RAM
+
+`config/agents.yaml` `limits:`:
+
+| Board RAM | `max_workers` | `container_memory` | `container_cpus` |
+|-----------|---------------|--------------------|------------------|
+| 4 GB      | 1             | `2g`               | 2                |
+| 8 GB      | 1             | `3g`               | 2–3              |
+| 8 GB+     | 2             | `2g` each          | 2                |
+
+Keep `max_workers: 1` on 4 GB boards. The worker image plus the model
+proxy and OS will otherwise swap. Restart `outpost.service` after
+editing limits.
+
+This Pi install is independent and does not communicate with any other
+Outpost host.

@@ -4,14 +4,15 @@
 #   python3 -c "import secrets; print(secrets.token_urlsafe(32))"  # per client
 #   chmod 600 config/api.yaml
 #
-# NEVER commit api.yaml. Tokens live only on the Mac (mode 600).
+# NEVER commit api.yaml. Tokens live only on this host (mode 600).
 
 # Local port the API listens on.
 port: 18443
 
-# Bind address: "auto" resolves the Tailscale IPv4 via `tailscale ip -4` at
-# startup (never 0.0.0.0). Use "127.0.0.1" only when fronted by
-# `tailscale serve` for HTTPS termination.
+# Bind address: "auto" resolves the Tailscale IPv4 via `tailscale ip -4`
+# when Tailscale is installed; otherwise 127.0.0.1. Tailscale is optional.
+# Use a LAN IP (not 0.0.0.0) if clients should reach this host without a
+# tailnet. 0.0.0.0 is refused so worker containers cannot hit the API.
 bind: auto
 
 # Optional: override the base URL clients (agentctl) use, e.g. the public

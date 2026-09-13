@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Supervise the API and the dispatcher controller as one process.
+
+Used by systemd (`service/outpost.service`) so a Linux install is a single
+unit. Children are this installation's API and controller only — they never
+contact another Outpost host.
+"""
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+API = ROOT / "service" / "api.py"
+CONTROLLER = ROOT / "service" / "controller.py"
+
+
+def main() -> int:
+    os.chdir(ROOT)
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    py = sys.executable
+    children: list[subprocess.Popen] = []
+
+    def stop(_signum=None, _frame=None):
+        for p in children:
+            if p.poll() is None:
+                p.terminate()
+        deadline = time.time() + 15
+        for p in children:
+            remaining = max(0.1, deadline - time.time())
+            try:
+                p.wait(timeout=remaining)
+            except Exception:
+                p.kill()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+
+    api = subprocess.Popen([py, str(API)], cwd=str(ROOT), env=env)
+    children.append(api)
+    controller = subprocess.Popen([py, str(CONTROLLER)], cwd=str(ROOT), env=env)
+    children.append(controller)
+    print(f"outpost-service: api pid={api.pid} controller pid={controller.pid}",
+          flush=True)
+
+    while True:
+        for p in children:
+            rc = p.poll()
+            if rc is not None:
+                print(f"outpost-service: child exited code={rc} — stopping",
+                      flush=True)
+                stop()
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

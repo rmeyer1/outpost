@@ -104,9 +104,10 @@ pricing:
         input_per_m_usd: 0.03
         output_per_m_usd: 0.07
 
-# Secure location of the OpenRouter key ON THE MAC. Read server-side only by
-# service/openrouter.py; never logged, never copied off the host, never
+# Secure location of the OpenRouter key ON THIS HOST. Read server-side only
+# by service/openrouter.py; never logged, never copied off the host, never
 # injected into a container's environment in the clear (it is registered
-# with the redactor the moment it is read).
+# with the redactor the moment it is read). Override with CA_OR_KEY_FILE.
+# Linux installs typically use ~/.config/outpost/openrouter.yaml.
 openrouter_key_file: "/Users/server/.config/goose/secrets.yaml"
 openrouter_key_name: "OPENROUTER_API_KEY"

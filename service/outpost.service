@@ -1,0 +1,23 @@
+[Unit]
+Description=Outpost standalone dispatcher (API + controller)
+Documentation=https://github.com/rmeyer1/outpost
+After=network-online.target docker.service
+Wants=network-online.target
+# Docker is required on Linux (worker.backend: docker). The unit still
+# starts if docker.service is absent so a bind-only API can come up for
+# debugging; the controller will exit if the runtime is not ready.
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/outpost
+Environment=PYTHONUNBUFFERED=1
+# docker group so the runner can talk to the local Docker socket.
+# install.sh also sets User=/Group= when not running as root.
+SupplementaryGroups=docker
+ExecStart=/usr/bin/python3 /opt/outpost/bin/outpost-service
+Restart=on-failure
+RestartSec=5
+# Tokens live in config/api.yaml (mode 600). Do not put secrets here.
+
+[Install]
+WantedBy=multi-user.target

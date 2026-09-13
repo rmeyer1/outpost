@@ -4,7 +4,7 @@ Usage: python3 service/controller.py [--once]
 
 Loop:
   - on startup: any job stuck in preparing/running/validating (e.g. after a
-    Mac reboot) goes back to queued with an event note; any stale ca-*
+    host reboot) goes back to queued with an event note; any stale ca-*
     containers are destroyed.
   - claim queued jobs up to limits.max_workers, spawning one
     service/runner.py <job-id> subprocess per job.
@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / "service"))
 import yaml  # noqa: E402
 from db import ACTIVE, connect, claim_next, count_active, get_job, log_event, next_queued, running_jobs, update_job  # noqa: E402
 from timeouts import enforce, load_timeouts  # noqa: E402
+from containers import get_backend  # noqa: E402
 
 
 def load_config() -> dict:
@@ -37,30 +38,19 @@ def load_spend() -> dict:
 
 
 def container_bin() -> str:
-    import os
-    return os.environ.get("CA_CONTAINER_BIN",
-                          str(Path.home() / "cloud-agents" / "rt" / "bin" / "container"))
+    from containers import container_bin as _cb
+    return _cb()
 
 
 def recover(config) -> None:
     db = connect(ROOT / config["paths"]["state"])
-    cbin = container_bin()
+    backend = get_backend(config)
     # Destroy any leftover job containers from before a reboot/crash.
-    try:
-        r = subprocess.run([cbin, "list", "--format", "json"], capture_output=True,
-                           text=True, timeout=30)
-    except Exception:
-        r = None
-    if r and r.returncode == 0:
-        import json
+    for n in backend.list_job_names():
         try:
-            items = json.loads(r.stdout) if r.stdout.strip() else []
+            backend.remove(n)
         except Exception:
-            items = []
-        names = [i.get("id", "") for i in items if isinstance(i, dict)]
-        for n in names:
-            if n.startswith("ca-job-") or n.startswith("ca-"):
-                subprocess.run([cbin, "rm", "-f", n], capture_output=True, timeout=60)
+            pass
     # Requeue jobs that never finished. needs_attention jobs are requeued too
     # (their runner died with the controller) but keep the flag timestamp so
     # the next watchdog tick re-flags them immediately if still past check-in.
@@ -80,16 +70,12 @@ def recover(config) -> None:
 def main() -> int:
     config = load_config()
     spend_cfg = load_spend()
-    # wait for the container system (after a reboot the
-    # com.cloudagents.container-system agent starts it in parallel)
-    cbin = container_bin()
+    # Wait for the local container runtime (Apple container system on macOS,
+    # Docker Engine on Linux). This host is a standalone Outpost — it does
+    # not contact any other installation.
+    backend = get_backend(config)
     for _ in range(60):
-        try:
-            r = subprocess.run([cbin, "system", "status"], capture_output=True,
-                               text=True, timeout=15)
-        except Exception:
-            r = None
-        if r and r.returncode == 0 and "running" in r.stdout.lower():
+        if backend.system_ready():
             break
         time.sleep(5)
     else:
