@@ -1,23 +1,21 @@
-# Spend & hard-stop policy for cloud-agent jobs.
+# Spend & hard-stop policy for outpost-agent jobs.
 #
 # Tier 1 — SuperGrok (default): subscription credits, weekly reset, liberal
-# usage. No dollar cap; controls are time-based (hang detection + ceiling).
+# usage. No dollar cap; the only time-based control is the hard ceiling.
 # Tier 2 — OpenRouter (overflow): pay-per-token. Controls are dollar-based
-# (rolling 7-day cap) PLUS the same time-based controls as Tier 1.
+# (rolling 7-day cap) PLUS the same ceiling as Tier 1.
 #
 # Every value here is tunable. For tests, the controller also honors env-var
-# overrides: CA_CHECKIN_MINUTES, CA_NORESPONSE_MINUTES, CA_CEILING_MINUTES,
+# overrides: CA_NORESPONSE_MINUTES, CA_CEILING_MINUTES,
 # CA_OR_POLL_SECONDS.
 
 tiers:
   supergrok:
     description: "Default path. SuperGrok subscription credits (weekly reset)."
     dollar_cap_usd: null          # no dollar cap on the subscription tier
-    # Hang detection: flag for human review after this many minutes.
-    # The container KEEPS RUNNING while flagged; the job is not killed.
-    checkin_minutes: 45
-    # No-response kill: if still unacknowledged this many minutes after the
-    # flag, kill the job. (75 min elapsed with the defaults.)
+    # No-response kill: a needs_attention job (set only by the OpenRouter
+    # untracked-spend path) that is still unacknowledged this many minutes
+    # after the flag is killed.
     noresponse_minutes: 30
     # Hard ceiling: kill the job at this many minutes elapsed, no exceptions,
     # even if acknowledged.
@@ -28,8 +26,7 @@ tiers:
     model: "deepseek/deepseek-v4-flash-0731"
     cap_usd: 25.0                 # rolling cap across ALL jobs
     cap_window_days: 7
-    # Same time-based controls as Tier 1.
-    checkin_minutes: 45
+    # Same time-based controls as Tier 1 (no-response kill + ceiling).
     noresponse_minutes: 30
     ceiling_minutes: 180
     # How often the runner polls the key-usage endpoint mid-job.
@@ -45,17 +42,16 @@ tiers:
 # When to route a job to Tier 2 (openrouter) instead of Tier 1 (supergrok):
 #  - job.provider == 'openrouter' (explicit per-task selection via
 #    `agentctl submit --provider openrouter`)
-#  - provider == 'auto' and the engine is listed in provider_agnostic_engines
-#    -> openrouter. (Currently empty: every engine speaks an
-#    OpenAI-compatible API and authenticates via the per-job broker
-#    (CA_PROXY_URL + CA_CLIENT_TOKEN); none need a raw key in-container.)
+#  - provider == 'auto' and the engine is provider-agnostic (goose, opencode)
+#    -> openrouter, because those engines need a raw API key, not the
+#    brokered SuperGrok proxy.
 #  - MID-FLIGHT FAILOVER (see `failover:` below): when the SuperGrok
 #    upstream starts returning 429s, the per-job broker re-points its
 #    upstream to OpenRouter transparently — the in-container agent just
 #    sees its requests start succeeding again.
 routing:
   default_provider: "supergrok"
-  provider_agnostic_engines: []
+  provider_agnostic_engines: ["goose", "opencode"]
 
 # Mid-flight SuperGrok -> OpenRouter failover (enforced in the per-job
 # broker, service/proxy_broker.py, which sees real upstream status codes).

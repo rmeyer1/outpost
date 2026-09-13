@@ -52,8 +52,8 @@ def recover(config) -> None:
         except Exception:
             pass
     # Requeue jobs that never finished. needs_attention jobs are requeued too
-    # (their runner died with the controller) but keep the flag timestamp so
-    # the next watchdog tick re-flags them immediately if still past check-in.
+    # (their runner died with the controller); the flag is cleared and the
+    # spend path will re-flag if spend is still untracked.
     rows = db.execute(
         "SELECT id FROM jobs WHERE status IN ('preparing','running','validating','needs_attention')"
     ).fetchall()
@@ -90,9 +90,10 @@ def main() -> int:
     timeouts_cache: dict[str, dict] = {}  # provider -> resolved timeouts
     try:
         while True:
-            # Watchdog: time-based hard stops (check-in flag, no-response
-            # kill, ceiling kill). Kills are requested via cancel_requested;
-            # the runner performs the actual container destruction.
+            # Watchdog: time-based hard stops (no-response kill for
+            # unacknowledged spend flags, ceiling kill). Kills are requested
+            # via cancel_requested; the runner performs the actual
+            # container destruction.
             for job in running_jobs(db):
                 prov = job.get("provider") or "supergrok"
                 if prov not in timeouts_cache:
