@@ -140,6 +140,27 @@ def seed_repo_on_host(clone_url: str, ref: str | None, seed_dir: str, log) -> No
     log("seed", f"host clone ready ref={ref or 'default'}")
 
 
+def read_github_token() -> str:
+    """Host's GitHub token via `gh auth token` (never stored, never logged).
+
+    Each host authenticates once (`gh auth login`); a job that opts in
+    with --github gets that host's token inside its container only, for
+    the job's lifetime. Fail fast here — before the container starts —
+    so a missing host auth is a clear submit-time-style error, not a
+    mysterious in-container git failure.
+    """
+    gh_bin = shutil.which("gh") or "gh"
+    r = run([gh_bin, "auth", "token"], timeout=30)
+    token = (r.stdout or "").strip()
+    if r.returncode != 0 or not token:
+        raise RuntimeError(
+            "github access requested but this host has no gh "
+            "authentication: run `gh auth login` on the host, or submit "
+            "without --github. "
+            f"(gh auth token: {(r.stderr or '').strip()[-200:]})")
+    return token
+
+
 def wait_tcp(host: str, port: int, timeout: float = 20.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -300,6 +321,16 @@ def main(job_id: str) -> int:
         # expects (replaces the adapter's placeholder).
         env["CA_CLIENT_TOKEN"] = job_token
         register_secret(env.get("CA_CLIENT_TOKEN", ""))
+        # Opt-in GitHub access (--github): the host's gh token enters THIS
+        # job's container only, as GH_TOKEN. It is never baked into the
+        # image and never logged (registered for redaction above).
+        if job.get("github_access"):
+            gh_token = read_github_token()
+            env["GH_TOKEN"] = gh_token
+            env["CA_GITHUB_ACCESS"] = "1"
+            register_secret(gh_token)
+            log("github", "GitHub access granted: host gh token injected "
+                          "as GH_TOKEN (container-only, redacted in logs)")
         if seed_dir:
             # Private repo: the host cloned the tree; the entrypoint
             # waits for /work/repo instead of cloning.
@@ -509,6 +540,7 @@ def main(job_id: str) -> int:
             "engine": {"requested": job["engine_requested"],
                        "selected": engine_name, "reason": reason},
             "provider": provider_now,
+            "github_access": bool(job.get("github_access")),
             "container": {"name": name, "image": config["image"]["name"]},
             "limits": {"max_minutes": max_minutes,
                        "budget_usd": job["budget_usd"],

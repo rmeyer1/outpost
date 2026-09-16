@@ -112,6 +112,7 @@ def cmd_submit(a) -> int:
         "engine": a.engine, "provider": a.provider,
         "budget_usd": a.budget_usd, "max_minutes": a.max_minutes,
         "idempotency_key": a.idempotency_key, "ref": a.ref,
+        "github_access": a.github,
     })
     print(payload["id"])
     return 0
@@ -230,6 +231,10 @@ def main() -> int:
     s.add_argument("--idempotency-key")
     s.add_argument("--ref", default=None,
                    help="git ref for host-seeded repos: branch/tag or pull/N/head")
+    s.add_argument("--github", action="store_true",
+                   help="grant this job GitHub access: the runner injects the "
+                        "host's gh token as GH_TOKEN so the agent can "
+                        "git push and run gh pr create")
     s.set_defaults(fn=cmd_submit)
 
     s = sub.add_parser("status"); s.add_argument("job_id"); s.set_defaults(fn=cmd_status)

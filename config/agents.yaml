@@ -53,6 +53,19 @@ engines:
     opencode_bin: "/usr/local/bin/opencode"
     opencode_version: "1.18.30"
 
+# GitHub access for agents (opt-in per job).
+# Jobs submitted with `agentctl submit --github` get the host's own `gh`
+# token injected as GH_TOKEN into their container only, so the agent can
+# `git push` and run `gh pr create`. The token is never baked into the
+# image and is redacted from every log and manifest.
+# Each host authenticates once: `gh auth login` (the Mac already has this;
+# a fresh host needs it before its first --github job).
+# enabled: false blocks --github submits entirely (operator kill switch).
+github:
+  enabled: true
+  # Informational: gh CLI version pinned in images/worker/Containerfile.
+  gh_version: "2.100.0"
+
 # Repositories a job may clone inside its container.
 # 'scratch' = fresh `git init` inside the container, no network clone.
 # host_seeded: private repos the HOST clones (it holds the GitHub

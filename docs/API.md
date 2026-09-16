@@ -59,6 +59,40 @@ All responses are JSON unless noted. Errors are `{"error": "message"}`.
 repo is prepared (strict charset: `[A-Za-z0-9/_.-]`, no `..`). It is stored
 on the job, shown in `GET /jobs/<id>`, and recorded in the manifest.
 
+`github_access` is optional (default `false`): when `true`, the runner
+injects the host's own `gh` token as `GH_TOKEN` into that job's container
+only, and the entrypoint configures git + `gh` so the agent can `git push`
+and run `gh pr create`. Blocked with `400` when `github.enabled: false` in
+`config/agents.yaml`. Each host needs `gh auth login` once before its first
+`github_access` job.
+
+### Agent GitHub access (`--github`)
+
+By default the container never sees a GitHub credential (private repos are
+host-seeded; see below). A job that needs to push code or open PRs opts in:
+
+```bash
+bin/agentctl submit --type coding --repo https://github.com/rmeyer1/rain-room.git \
+  --github --task "Fix the bug and open a PR against main"
+# or: POST /jobs with {"github_access": true, ...}
+```
+
+What happens:
+
+1. The runner reads the host's token via `gh auth token` **before** the
+   container starts (fail fast if the host isn't authenticated).
+2. The token enters only that job's container as `GH_TOKEN`; it is
+   registered for log redaction and excluded from the manifest's env dump.
+3. The entrypoint sets a git credential helper (token from the environment,
+   never written to disk), rewrites an SSH `origin` to https, and tells the
+   agent it owns the git workflow: commit, `git push origin <branch>`,
+   `gh pr create --title ... --body ...`.
+4. The container is destroyed at job end, taking the token with it.
+
+Security notes: the token acts as you on GitHub (whatever scopes your
+`gh auth` granted), so `--github` is opt-in per job, never default. Set
+`github.enabled: false` in `config/agents.yaml` to disable it host-wide.
+
 ### Host-seeded repos (private GitHub access without container credentials)
 
 Repos listed under `repos.host_seeded` in `config/agents.yaml` are private:

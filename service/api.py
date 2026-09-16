@@ -259,6 +259,7 @@ class Handler(BaseHTTPRequestHandler):
             max_minutes=body.get("max_minutes"),
             idempotency_key=body.get("idempotency_key"),
             ref=body.get("ref"),
+            github_access=bool(body.get("github_access")),
         )
         self._send_json(200, result)
         return 200

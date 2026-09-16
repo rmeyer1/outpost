@@ -20,6 +20,10 @@ _PATTERNS = [
     # OpenRouter / xAI style keys.
     (re.compile(r"\bsk-or-[A-Za-z0-9]{16,}\b"), "sk-or-<REDACTED>"),
     (re.compile(r"\bxai-[A-Za-z0-9]{16,}\b"), "xai-<REDACTED>"),
+    # GitHub tokens (classic ghp_, fine-grained github_pat_, OAuth gho_).
+    (re.compile(r"\bghp_[A-Za-z0-9]{16,}\b"), "ghp_<REDACTED>"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{16,}\b"), "github_pat_<REDACTED>"),
+    (re.compile(r"\bgho_[A-Za-z0-9]{16,}\b"), "gho_<REDACTED>"),
     # Long hex/base64 blobs that are probably tokens (conservative length).
     (re.compile(r"\b[A-Za-z0-9_\-]{40,}\b"), "<REDACTED-LONG-TOKEN>"),
 ]
