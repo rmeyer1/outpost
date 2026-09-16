@@ -76,7 +76,8 @@ def submit_job(*, type: str, repo: str, base: str = "main", task: str = "",
                engine: str = "auto", provider: str = "supergrok",
                budget_usd: float | None = None, max_minutes: int | None = None,
                idempotency_key: str | None = None,
-               ref: str | None = None) -> dict:
+               ref: str | None = None,
+               github_access: bool = False) -> dict:
     config = load_config()
     if type not in JOB_TYPES:
         raise DispatchError(400,
@@ -92,6 +93,11 @@ def submit_job(*, type: str, repo: str, base: str = "main", task: str = "",
         raise DispatchError(
             400, f"provider must be supergrok|openrouter|auto, got {provider}")
     ref = validate_ref(ref)
+    github_cfg = config.get("github") or {}
+    if github_access and not github_cfg.get("enabled", True):
+        raise DispatchError(
+            400, "github access is disabled on this host "
+                 "(config agents.yaml → github.enabled)")
     db = _db()
     try:
         if idempotency_key:
@@ -113,10 +119,12 @@ def submit_job(*, type: str, repo: str, base: str = "main", task: str = "",
             idempotency_key=idempotency_key,
             provider=provider,
             ref=ref,
+            github_access=github_access,
         )
         log_event(db, job["id"], "submit",
                   f"type={job['type']} repo={repo} engine={engine} "
-                  f"provider={provider} ref={ref}")
+                  f"provider={provider} ref={ref} "
+                  f"github_access={bool(github_access)}")
         return {"id": job["id"], "deduplicated": False}
     finally:
         db.close()
@@ -127,7 +135,7 @@ _STATUS_KEYS = (
     "engine_reason", "provider", "budget_usd", "max_minutes", "created_at",
     "started_at", "finished_at", "attention_flagged_at",
     "attention_acked_at", "spend_usd", "kill_reason", "failover_at",
-    "failover_from", "failover_to", "failover_reason", "error",
+    "failover_from", "failover_to", "failover_reason", "github_access", "error",
 )
 
 

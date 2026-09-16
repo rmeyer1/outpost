@@ -25,6 +25,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CODEX_VERSION=0.94.0 \
     OPENCODE_VERSION=1.18.30 \
     GOOSE_VERSION=1.50.0 \
+    # GitHub CLI (for jobs that opt into GitHub access with --github; the
+    # token is injected at runtime, never baked in). Official release
+    # tarball, like goose.
+    GH_VERSION=2.100.0 \
     # xAI Grok Build CLI (standalone Rust binary, versioned independently of
     # the npm meta-package). Installed directly from the registry tarball
     # below so /usr/local/bin/grok is the real binary the engine probe
@@ -55,8 +59,8 @@ RUN if [ -f /opt/hermes-agent/pyproject.toml ] || [ -f /opt/hermes-agent/setup.p
 # Single layer so Node, CLIs, and the curl/xz build deps collapse together.
 RUN ARCH="$(dpkg --print-architecture)" \
  && case "$ARCH" in \
-      amd64) NODE_ARCH=x64;   GOOSE_ARCH=x86_64-unknown-linux-gnu; GROK_ARCH=x64 ;; \
-      arm64) NODE_ARCH=arm64; GOOSE_ARCH=aarch64-unknown-linux-gnu; GROK_ARCH=arm64 ;; \
+      amd64) NODE_ARCH=x64;   GOOSE_ARCH=x86_64-unknown-linux-gnu; GROK_ARCH=x64;   GH_ARCH=amd64 ;; \
+      arm64) NODE_ARCH=arm64; GOOSE_ARCH=aarch64-unknown-linux-gnu; GROK_ARCH=arm64; GH_ARCH=arm64 ;; \
       *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
     esac \
  && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
@@ -71,6 +75,10 @@ RUN ARCH="$(dpkg --print-architecture)" \
  && GOOSE_SRC="$(find /tmp/goose-extract -type f -name goose | head -n 1)" \
  && test -n "$GOOSE_SRC" \
  && install -m 0755 "$GOOSE_SRC" /usr/local/bin/goose \
+ && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" \
+      | tar -xz -C /tmp \
+ && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh \
+ && rm -rf "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}" \
  && curl -fsSL "https://registry.npmjs.org/@xai-official/grok-linux-${GROK_ARCH}/-/grok-linux-${GROK_ARCH}-${GROK_VERSION}.tgz" -o /tmp/grok.tgz \
  && tar -xzf /tmp/grok.tgz -C /tmp package/bin/grok.br \
  && node -e "process.stdout.write(require('zlib').brotliDecompressSync(require('fs').readFileSync('/tmp/package/bin/grok.br')))" > /usr/local/bin/grok \
@@ -83,7 +91,8 @@ RUN ARCH="$(dpkg --print-architecture)" \
  && codex --version \
  && opencode --version \
  && goose --version \
- && grok --version
+ && grok --version \
+ && gh --version
 
 # Non-root user for harness CLIs that refuse to run as root.
 # The entrypoint runs as root and chowns the per-job dirs to this user.

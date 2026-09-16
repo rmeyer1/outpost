@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -87,6 +88,72 @@ def wait_for_host_seed(repo_dir: str, timeout_s: float = 120.0) -> None:
                 f"timed out after {timeout_s:.0f}s waiting for host-seeded "
                 f"{repo_dir}/.git")
         time.sleep(2)
+
+
+# ---------------------------------------------------------------------------
+# GitHub access (opt-in via --github; GH_TOKEN injected by the runner)
+# ---------------------------------------------------------------------------
+
+GITHUB_PREAMBLE = (
+    "\nGitHub access is ENABLED for this job: GH_TOKEN is set and `gh` is "
+    "authenticated as the repository owner.\n"
+    "This overrides the 'do not commit' instruction above — with GitHub "
+    "access you own the git workflow:\n"
+    "- Commit your work with clear messages (`git commit`).\n"
+    "- Push the branch: `git push origin <branch>`.\n"
+    "- Open a PR when the task calls for it: "
+    "`gh pr create --title \"...\" --body \"...\" --base <base>`.\n"
+    "Never print GH_TOKEN and never put it in commit messages or PR bodies "
+    "(it is redacted from logs, but keep it out of git objects anyway).\n"
+)
+
+
+def normalize_github_origin(repo_dir: str) -> None:
+    """Rewrite the origin remote to https when GitHub access is granted.
+
+    Host-seeded clones use an SSH remote (git@github.com:...); the
+    container has no SSH key, so switch to https for the token-based
+    credential helper below. Repos cloned from the https allowlist URL
+    are already fine.
+    """
+    r = sh("git", "remote", "get-url", "origin", cwd=repo_dir)
+    if r.returncode != 0:
+        return  # scratch repo: no origin at all
+    url = (r.stdout or "").strip()
+    m = re.match(r"^git@github\.com:(.+?)(\.git)?$", url)
+    if m:
+        https_url = f"https://github.com/{m.group(1)}.git"
+        sh("git", "remote", "set-url", "origin", https_url,
+           cwd=repo_dir, check=True)
+        log("github", f"origin rewritten to {https_url}")
+
+
+def setup_github_access() -> bool:
+    """Configure git + gh from the injected GH_TOKEN. Returns True if active.
+
+    - git credential helper serves x-access-token / $GH_TOKEN from the
+      environment: the token is never written to disk.
+    - origin is normalized to https (host seeds clone over SSH).
+    - gh needs no configuration: it reads GH_TOKEN itself.
+    A bad token is a warning, not fatal — the task may not need GitHub
+    even though the job opted in.
+    """
+    if not os.environ.get("GH_TOKEN"):
+        return False
+    sh("git", "config", "--global", "credential.helper",
+       '!f() { echo "username=x-access-token"; echo "password=$GH_TOKEN"; }; f',
+       check=True)
+    normalize_github_origin(REPO)
+    r = sh("gh", "auth", "status")
+    if r.returncode != 0:
+        log("github", "WARNING: gh auth status failed — "
+            f"pushes/PRs will fail: {(r.stderr or '').strip()[-200:]}")
+    else:
+        acct = (r.stdout or "").strip().splitlines()
+        log("github", "gh authenticated" +
+            (f" ({acct[0][:80]})" if acct else ""))
+    log("github", "git credential helper configured (token from GH_TOKEN env)")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +726,14 @@ def main() -> int:
     except Exception:
         before_sha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # empty tree
 
+    # Opt-in GitHub access: GH_TOKEN was injected by the runner (--github).
+    # Configure git/gh now, and give the agent the push/PR workflow. Without
+    # the flag the agent keeps the default contract (no commits, no pushes).
+    github_access = setup_github_access()
+    agent_task = task + GITHUB_PREAMBLE if github_access else task
+    if github_access:
+        log("github", "agent task extended with GitHub push/PR workflow")
+
     # 2. run the agent (tools execute inside THIS container)
     os.chdir(REPO)
     final, extra = "", {}
@@ -671,7 +746,7 @@ def main() -> int:
     }
     if engine in cli_runners:
         extra_key, runner = cli_runners[engine]
-        final, diag, timed_out = runner(task, REPO, model, proxy_url,
+        final, diag, timed_out = runner(agent_task, REPO, model, proxy_url,
                                         job_id, max_minutes)
         extra = {extra_key: diag}
         log("agent", f"{engine} stop={diag.get('stop_reason')} "
@@ -679,7 +754,7 @@ def main() -> int:
         if timed_out and not (final or "").startswith("AGENT ERROR"):
             final = f"AGENT ERROR: timed out after {max_minutes} minutes\n{final}"
     else:
-        final = run_agent_hermes(task, model, proxy_url, client_token, max_minutes)
+        final = run_agent_hermes(agent_task, model, proxy_url, client_token, max_minutes)
     log("agent", f"loop finished ({len(final)} chars final)")
     log("agent_final", final[:1500])
 
