@@ -83,10 +83,13 @@ What happens:
    container starts (fail fast if the host isn't authenticated).
 2. The token enters only that job's container as `GH_TOKEN`; it is
    registered for log redaction and excluded from the manifest's env dump.
-3. The entrypoint sets a git credential helper (token from the environment,
-   never written to disk), rewrites an SSH `origin` to https, and tells the
-   agent it owns the git workflow: commit, `git push origin <branch>`,
-   `gh pr create --title ... --body ...`.
+3. The entrypoint verifies the token, then persists it to `gh`'s `hosts.yml`
+   (mode 600) under both `/root` and `/work/home` — the hermes engine's
+   terminal tool scrubs the environment, so file-based auth is what the
+   agent's shells can actually read — configures a system-level git
+   credential helper (`gh auth git-credential`), rewrites an SSH `origin`
+   to https, and tells the agent it owns the git workflow: commit,
+   `git push origin <branch>`, `gh pr create --title ... --body ...`.
 4. The container is destroyed at job end, taking the token with it.
 
 Security notes: the token acts as you on GitHub (whatever scopes your
