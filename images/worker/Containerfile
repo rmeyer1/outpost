@@ -30,7 +30,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # below so /usr/local/bin/grok is the real binary the engine probe
     # expects. NOTE: grok was silently lost by the 2026-09-13 image rebuilds
     # because no install step existed — keep this step.
-    GROK_VERSION=1.0.30
+    GROK_VERSION=1.0.34
 
 # git: in-container clone/commit. curl+xz-utils: Node tarball + goose download
 # (purged at the end of the CLI layer so they do not stay in the image).
