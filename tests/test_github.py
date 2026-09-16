@@ -9,7 +9,10 @@ Covers:
 - runner.read_github_token: parses `gh auth token`; clear error when the
   host has no gh auth.
 - entrypoint.setup_github_access: no-op without GH_TOKEN; with a token it
-  configures a git credential helper and rewrites an SSH origin to https.
+  verifies via `gh auth status`, persists the token to gh hosts.yml
+  (mode 600) under both agent homes, configures a system-level git
+  credential helper via `gh auth git-credential`, and rewrites an
+  SSH origin to https.
 - entrypoint GITHUB_PREAMBLE: documents push + gh pr create.
 - images/worker Containerfile/Dockerfile: gh CLI pinned + installed.
 
@@ -211,18 +214,26 @@ try:
 finally:
     entrypoint.sh, entrypoint.log = real_sh, real_log
 
-# With GH_TOKEN: credential helper + SSH origin rewrite (fake the shell).
+# With GH_TOKEN: <redacted>, system credential helper, SSH origin
+# rewrite (fake the shell; redirect hosts.yml writes to tmp homes).
 sh_calls = []
 FAKE_ORIGIN = "git@github.com:rmeyer1/rain-room.git"
 def _fake_sh(*args, **kw):
     sh_calls.append(list(args))
     if args[:3] == ("git", "remote", "get-url"):
         return _FakeCompleted(0, FAKE_ORIGIN + "\n", "")
+    if args[:3] == ("gh", "api", "user"):
+        return _FakeCompleted(0, "rmeyer1\n", "")
     if args[:2] == ("gh", "auth"):
         return _FakeCompleted(0, "Logged in to github.com account rmeyer1\n", "")
     return _FakeCompleted(0, "", "")
+real_wgh = entrypoint.write_gh_hosts
+tmp_homes = [tempfile.mkdtemp(prefix="ca-gh-home1-"),
+             tempfile.mkdtemp(prefix="ca-gh-home2-")]
 entrypoint.sh = _fake_sh
 entrypoint.log = lambda *a, **k: None
+entrypoint.write_gh_hosts = lambda token, user: real_wgh(
+    token, user, homes=tuple(tmp_homes))
 os.environ["GH_TOKEN"] = "test-gh-token-secret-1"
 try:
     repo_dir = tempfile.mkdtemp(prefix="ca-gh-origin-")
@@ -237,17 +248,29 @@ try:
         entrypoint.REPO = real_repo
     check("setup_github_access True with GH_TOKEN", ok is True)
     helper_calls = [c for c in sh_calls if "credential.helper" in c]
-    check("git credential helper configured",
-          any("password=$GH_TOKEN" in " ".join(c) for c in helper_calls),
+    check("system git credential helper via gh auth git-credential",
+          any(c[:3] == ["git", "config", "--system"] and
+              "gh auth git-credential" in " ".join(c)
+              for c in helper_calls),
           repr(helper_calls[:1]))
-    check("token never written to a file by setup",
-          not any("test-gh-token-secret-1" in " ".join(c) for c in sh_calls))
+    hosts_paths = [os.path.join(h, ".config", "gh", "hosts.yml")
+                   for h in tmp_homes]
+    check("hosts.yml written under both agent homes",
+          all(os.path.isfile(p) for p in hosts_paths), repr(hosts_paths))
+    perms_ok = all(oct(os.stat(p).st_mode & 0o777) == "0o600"
+                   for p in hosts_paths)
+    check("hosts.yml mode 600", perms_ok)
+    bodies = [open(p).read() for p in hosts_paths]
+    check("hosts.yml carries the token and user",
+          all("test-gh-token-secret-1" in b and "rmeyer1" in b
+              for b in bodies))
     seturl = [c for c in sh_calls if c[:3] == ["git", "remote", "set-url"]]
     check("SSH origin rewritten to https",
           any("https://github.com/rmeyer1/rain-room.git" in c for c in seturl),
           repr(seturl))
 finally:
     entrypoint.sh, entrypoint.log = real_sh, real_log
+    entrypoint.write_gh_hosts = real_wgh
     os.environ.pop("GH_TOKEN", None)
 
 # https origin is left alone.

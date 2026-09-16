@@ -128,31 +128,72 @@ def normalize_github_origin(repo_dir: str) -> None:
         log("github", f"origin rewritten to {https_url}")
 
 
+def write_gh_hosts(token: str, user: str,
+                 homes: tuple = ("/root", HOME_DIR)) -> None:
+    """Persist the GH_TOKEN to gh's hosts.yml for every HOME the agent
+    shells may run under.
+
+    The hermes engine's terminal tool spawns shells with a scrubbed
+    environment, so GH_TOKEN never reaches them; the subprocess CLI
+    engines run with HOME=/root while hermes runs with HOME=/work/home.
+    Writing hosts.yml (mode 600) under both homes makes `gh` — and git
+    via `gh auth git-credential` — authenticate everywhere without
+    needing the token in the environment.
+    The files live in the disposable container only: they are outside
+    /out and outside the repo, so they are never collected into
+    artifacts, and the container is destroyed after the job.
+    """
+    content = (
+        "github.com:\n"
+        f"    user: {user}\n"
+        f"    oauth_token: {token}\n"
+        "    git_protocol: https\n"
+    )
+    for home in homes:
+        cfg_dir = os.path.join(home, ".config", "gh")
+        os.makedirs(cfg_dir, exist_ok=True)
+        path = os.path.join(cfg_dir, "hosts.yml")
+        with open(path, "w") as f:
+            f.write(content)
+        os.chmod(path, 0o600)
+        log("github", f"gh hosts.yml written for {home} (mode 600)")
+
+
 def setup_github_access() -> bool:
     """Configure git + gh from the injected GH_TOKEN. Returns True if active.
 
-    - git credential helper serves x-access-token / $GH_TOKEN from the
-      environment: the token is never written to disk.
+    - Verifies the token with `gh auth status`, then persists it to gh's
+      hosts.yml under both /root and /work/home (see write_gh_hosts):
+      the hermes terminal tool scrubs the environment, so the token
+      must live in files the agent's shells can read.
+    - git uses `gh auth git-credential` as a *system-level* credential
+      helper (/etc/gitconfig), so it applies regardless of HOME.
     - origin is normalized to https (host seeds clone over SSH).
-    - gh needs no configuration: it reads GH_TOKEN itself.
     A bad token is a warning, not fatal — the task may not need GitHub
     even though the job opted in.
     """
-    if not os.environ.get("GH_TOKEN"):
+    token = os.environ.get("GH_TOKEN")
+    if not token:
         return False
-    sh("git", "config", "--global", "credential.helper",
-       '!f() { echo "username=x-access-token"; echo "password=$GH_TOKEN"; }; f',
-       check=True)
-    normalize_github_origin(REPO)
     r = sh("gh", "auth", "status")
     if r.returncode != 0:
         log("github", "WARNING: gh auth status failed — "
             f"pushes/PRs will fail: {(r.stderr or '').strip()[-200:]}")
-    else:
-        acct = (r.stdout or "").strip().splitlines()
-        log("github", "gh authenticated" +
-            (f" ({acct[0][:80]})" if acct else ""))
-    log("github", "git credential helper configured (token from GH_TOKEN env)")
+        return False
+    acct = (r.stdout or "").strip().splitlines()
+    log("github", "gh authenticated" +
+        (f" ({acct[0][:80]})" if acct else ""))
+    u = sh("gh", "api", "user", "--jq", ".login")
+    user = (u.stdout or "").strip() or "x-access-token"
+    try:
+        write_gh_hosts(token, user)
+    except Exception as exc:
+        log("github", f"WARNING: could not write gh hosts.yml: {exc}")
+        return False
+    sh("git", "config", "--system", "credential.helper",
+       "!gh auth git-credential", check=True)
+    normalize_github_origin(REPO)
+    log("github", "git credential helper configured (system, via gh)")
     return True
 
 
