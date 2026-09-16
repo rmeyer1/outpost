@@ -126,6 +126,43 @@ class _FakeCompleted:
         self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
 
 real_run = runner_mod.run
+
+# find_gh_binary: CA_GH_BIN override wins over PATH.
+os.environ["CA_GH_BIN"] = "/custom/path/gh"
+check("find_gh_binary honors CA_GH_BIN",
+      runner_mod.find_gh_binary() == "/custom/path/gh")
+del os.environ["CA_GH_BIN"]
+
+# find_gh_binary: falls back to well-known locations when not on PATH.
+real_which = shutil.which
+runner_mod_shutil_which = runner_mod.shutil.which
+runner_mod.shutil.which = lambda *a, **k: None
+fake_gh = os.path.join(scratch, "fakebin", "gh")
+os.makedirs(os.path.dirname(fake_gh), exist_ok=True)
+open(fake_gh, "w").write("#!/bin/sh\n")
+os.chmod(fake_gh, 0o755)
+runner_mod._GH_FALLBACKS = (fake_gh,)
+try:
+    check("find_gh_binary falls back to known locations",
+          runner_mod.find_gh_binary() == fake_gh)
+finally:
+    runner_mod.shutil.which = runner_mod_shutil_which
+    runner_mod._GH_FALLBACKS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
+
+# find_gh_binary: clear error when gh is nowhere.
+runner_mod.shutil.which = lambda *a, **k: None
+runner_mod._GH_FALLBACKS = ()
+os.environ.pop("CA_GH_BIN", None)
+try:
+    runner_mod.find_gh_binary()
+    check("find_gh_binary errors clearly with no gh", False, "no error raised")
+except RuntimeError as e:
+    check("find_gh_binary errors clearly with no gh", "`gh` CLI was not found" in str(e))
+finally:
+    runner_mod.shutil.which = runner_mod_shutil_which
+    runner_mod._GH_FALLBACKS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
+
+os.environ["CA_GH_BIN"] = "/fake/gh"  # keep find_gh_binary out of it
 runner_mod.run = lambda cmd, **kw: _FakeCompleted(0, "  host-token-abc123\n", "")
 try:
     check("read_github_token strips output",
@@ -159,6 +196,7 @@ except RuntimeError as e:
           "gh auth login" in str(e), str(e)[:100])
 finally:
     runner_mod.run = real_run
+    os.environ.pop("CA_GH_BIN", None)
 
 # --- entrypoint.setup_github_access -----------------------------------------
 # No GH_TOKEN: no-op, never touches git.

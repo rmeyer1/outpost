@@ -140,6 +140,29 @@ def seed_repo_on_host(clone_url: str, ref: str | None, seed_dir: str, log) -> No
     log("seed", f"host clone ready ref={ref or 'default'}")
 
 
+# Where to look for the gh CLI when it is not on PATH. Launchd services
+# get a minimal PATH, so Homebrew's location is usually invisible to the
+# runner. CA_GH_BIN overrides everything (ops/test escape hatch).
+_GH_FALLBACKS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
+
+
+def find_gh_binary() -> str:
+    """Locate the gh CLI: CA_GH_BIN, then PATH, then well-known locations."""
+    override = os.environ.get("CA_GH_BIN")
+    if override:
+        return override
+    found = shutil.which("gh")
+    if found:
+        return found
+    for cand in _GH_FALLBACKS:
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    raise RuntimeError(
+        "github access requested but the `gh` CLI was not found on this "
+        "host: install it (e.g. `brew install gh`) so it lands on PATH or "
+        "at /opt/homebrew/bin/gh or /usr/local/bin/gh, or set CA_GH_BIN.")
+
+
 def read_github_token() -> str:
     """Host's GitHub token via `gh auth token` (never stored, never logged).
 
@@ -149,7 +172,7 @@ def read_github_token() -> str:
     so a missing host auth is a clear submit-time-style error, not a
     mysterious in-container git failure.
     """
-    gh_bin = shutil.which("gh") or "gh"
+    gh_bin = find_gh_binary()
     r = run([gh_bin, "auth", "token"], timeout=30)
     token = (r.stdout or "").strip()
     if r.returncode != 0 or not token:
