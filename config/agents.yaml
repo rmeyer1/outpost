@@ -11,14 +11,14 @@ engines:
     enabled: true
     default: true
     lanes: [general, coding, artifact, research]
-    model: "grok-4.6"
+    model: "grok-4.20-0309-reasoning"
     # Model access is brokered: the runner starts `hermes proxy` on the host
     # (xai-oauth subscription). The container never sees raw credentials.
     proxy_provider: "xai"
   grok-build:
     enabled: true
     lanes: [coding]
-    model: "grok-4.6"
+    model: "grok-4.20-0309-reasoning"
     # xAI grok CLI (pinned version below, baked into the worker image at
     # grok_bin). Runs headless in-container; model access is brokered through
     # the per-job proxy like hermes, so no xAI credential is needed
@@ -29,7 +29,7 @@ engines:
   codex:
     enabled: true
     lanes: [coding]
-    model: "grok-4.6"
+    model: "grok-4.20-0309-reasoning"
     # OpenAI `codex` CLI (pinned version below). Headless `codex exec`;
     # model access is brokered through CA_PROXY_URL + CA_CLIENT_TOKEN.
     codex_bin: "/usr/local/bin/codex"
@@ -37,7 +37,7 @@ engines:
   goose:
     enabled: true
     lanes: [general]
-    model: "grok-4.6"
+    model: "grok-4.20-0309-reasoning"
     # Block `goose` CLI (pinned GitHub-release binary). Headless
     # `goose run --instructions`; OpenAI-compatible provider pointed at
     # the per-job broker. Select with --engine goose.
@@ -46,7 +46,7 @@ engines:
   opencode:
     enabled: true
     lanes: [coding]
-    model: "grok-4.6"
+    model: "grok-4.20-0309-reasoning"
     # `opencode` CLI (pinned npm package opencode-ai). Headless
     # `opencode run`; custom provider in opencode.json points at the
     # broker. Select with --engine opencode.
