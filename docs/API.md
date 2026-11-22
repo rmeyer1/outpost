@@ -48,12 +48,34 @@ All responses are JSON unless noted. Errors are `{"error": "message"}`.
   "task": "write a hello.py that prints hi",
   "engine": "auto",
   "provider": "supergrok",
+  "model": "minimax/minimax-m2.5",
   "budget_usd": 2.0,
   "max_minutes": 30,
   "idempotency_key": "unique-per-request",
   "ref": "pull/8/head"
 }
 ```
+
+`model` is optional and only valid with `provider: "openrouter"`: an
+OpenRouter model id from the allowlist in `config/spend.yaml` →
+`tiers.openrouter.models`:
+
+| id | notes |
+|----|-------|
+| `deepseek/deepseek-v4-flash-0731` | default (cheap/fast); also the mid-flight SuperGrok → OpenRouter failover target |
+| `minimax/minimax-m2.5` | $0.27 in / $0.95 out per 1M tokens, ~198K context (OpenRouter catalogue) |
+| `deepseek/deepseek-v4-pro` | $0.90 in / $1.50 out per 1M tokens (OpenRouter catalogue; the 0423 release — still live, distinct from the newer `-0813` GA id) |
+
+Omitting `model` (or passing `null`) uses the tier default
+(`tiers.openrouter.default_model`, currently the DeepSeek flash model;
+deployments still on the legacy singular `model:` key treat that value as
+the default). `model` without `provider: "openrouter"` → 400; an unknown
+model id → 400 naming the allowed ids. The selected model is stored on the
+job (`or_model`), shown in `GET /jobs/<id>`, used by the broker's request
+rewrite, and recorded in the manifest. Adding a model later is a
+config-only change: one allowlist entry plus one `pricing.openrouter.models`
+entry — no code change. (Pricing entries are ESTIMATES for attribution
+only; the $25 rolling cap is enforced from key-usage deltas.)
 
 `ref` is optional: a git branch, tag, or `pull/N/head` checked out after the
 repo is prepared (strict charset: `[A-Za-z0-9/_.-]`, no `..`). It is stored
@@ -111,11 +133,15 @@ string (e.g. `https://github.com/rmeyer1/rain-room.git`) in `CA_REPO`. When
   worker (coding lane). If the requested engine is unavailable the
   registry falls back along its chain (e.g. `grok-build` → `hermes`).
 - `provider`: `supergrok` (default) | `openrouter` | `auto`
+- `model`: OpenRouter model id (see the menu table above); requires
+  `provider: openrouter`
 - `repo` must be on the allowlist (`config/agents.yaml` → `repos.allowlist`)
 - `idempotency_key` makes resubmits safe: the same key returns the original
   job id with `"deduplicated": true`
 - → `200 {"id": "job_20260912_...", "deduplicated": false}`
-- → `400` on empty task, unknown repo, bad provider/type
+- → `400` on empty task, unknown repo, bad provider/type, `model` without
+  `provider: "openrouter"`, or an unknown model id (the error names the
+  allowed ids)
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

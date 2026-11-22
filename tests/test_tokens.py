@@ -49,6 +49,16 @@ check("deepseek input rate", pi == 0.03, pi)
 check("deepseek output rate", po == 0.07, po)
 check("deepseek source tag", src == "token_estimate", src)
 
+pi, po, src = pricing.lookup_price(
+    spend_cfg, "openrouter", "minimax/minimax-m2.5")
+check("m2.5 input rate (verified catalogue 0.27)", pi == 0.27, pi)
+check("m2.5 output rate (verified catalogue 0.95)", po == 0.95, po)
+
+pi, po, src = pricing.lookup_price(
+    spend_cfg, "openrouter", "deepseek/deepseek-v4-pro")
+check("v4-pro input rate (verified catalogue 0.90)", pi == 0.90, pi)
+check("v4-pro output rate (verified catalogue 1.50)", po == 1.50, po)
+
 pi, po, src = pricing.lookup_price(spend_cfg, "supergrok", "grok-4.6")
 check("supergrok prices at $0", pi == 0.0 and po == 0.0, (pi, po))
 check("supergrok source tag", src == "subscription", src)

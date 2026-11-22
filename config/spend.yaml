@@ -23,7 +23,17 @@ tiers:
 
   openrouter:
     description: "Overflow path. Pay-per-token via OpenRouter."
-    model: "deepseek/deepseek-v4-flash-0731"
+    # OpenRouter model menu. `models` is the allowlist of model ids a job
+    # may select with `--model`; `default_model` is used when a job submits
+    # without one (and as the mid-flight SuperGrok -> OpenRouter failover
+    # target). Back-compat: a deployment still on the legacy singular
+    # `model:` key (no `models`/`default_model`) treats that value as the
+    # default.
+    models:
+      - "deepseek/deepseek-v4-flash-0731"
+      - "minimax/minimax-m2.5"
+      - "deepseek/deepseek-v4-pro"
+    default_model: "deepseek/deepseek-v4-flash-0731"
     cap_usd: 25.0                 # rolling cap across ALL jobs
     cap_window_days: 7
     # Same time-based controls as Tier 1 (no-response kill + ceiling).
@@ -41,14 +51,19 @@ tiers:
 
 # When to route a job to Tier 2 (openrouter) instead of Tier 1 (supergrok):
 #  - job.provider == 'openrouter' (explicit per-task selection via
-#    `agentctl submit --provider openrouter`)
+#    `agentctl submit --provider openrouter`). The OpenRouter model is
+#    chosen per job: `--model <id>` (must be in tiers.openrouter.models;
+#    default_model applies when omitted).
 #  - provider == 'auto' and the engine is provider-agnostic (goose, opencode)
 #    -> openrouter, because those engines need a raw API key, not the
-#    brokered SuperGrok proxy.
+#    brokered SuperGrok proxy. `auto` never picks OpenRouter on its own
+#    otherwise — unchanged.
 #  - MID-FLIGHT FAILOVER (see `failover:` below): when the SuperGrok
-#    upstream starts returning 429s, the per-job broker re-points its
-#    upstream to OpenRouter transparently — the in-container agent just
-#    sees its requests start succeeding again.
+#    upstream returns 429s (rate limit) or a 402 (credit exhaustion —
+#    spending limit hit on the subscription), the per-job broker re-points
+#    its upstream to OpenRouter transparently — the in-container agent just
+#    sees its requests start succeeding again. Failover always lands on
+#    the DEFAULT model (jobs that fail over mid-flight never selected one).
 routing:
   default_provider: "supergrok"
   provider_agnostic_engines: ["goose", "opencode"]
@@ -57,7 +72,8 @@ routing:
 # broker, service/proxy_broker.py, which sees real upstream status codes).
 failover:
   enabled: true
-  # Fire after this many CONSECUTIVE upstream 429s (no successful response
+  # 429 semantics (SuperGrok rate limit): can be transient, so fire only
+  # after this many CONSECUTIVE upstream 429s (no successful response
   # between them), all inside the trailing window_seconds ...
   consecutive_429s: 3
   # ... or when >=2 429s arrive inside the trailing window while the
@@ -66,7 +82,12 @@ failover:
   # never reaches the burst threshold.
   window_seconds: 60
   # Upstream status codes that count toward the trigger.
-  status_codes: [429]
+  #  429 — rate limit (see the consecutive/window rules above).
+  #  402 — credit exhaustion (personal-team-blocked:spending-limit):
+  #        NOT transient, the tier will not recover by retrying, so a 402
+  #        fails over on its FIRST occurrence (after the cap pre-check),
+  #        no consecutive-count rule.
+  status_codes: [429, 402]
   # Guards: the OpenRouter rolling-cap pre-check runs before every
   # failover; if the cap is already hit the job is flagged
   # needs_attention instead of failing over. One failover per job max,
@@ -99,6 +120,16 @@ pricing:
       "deepseek/deepseek-v4-flash-0731":
         input_per_m_usd: 0.03
         output_per_m_usd: 0.07
+      "minimax/minimax-m2.5":
+        input_per_m_usd: 0.27
+        output_per_m_usd: 0.95
+      "deepseek/deepseek-v4-pro":
+        # Verified against the OpenRouter catalogue (2026-11-22):
+        # $0.90 in / $1.50 out per 1M tokens. These are ESTIMATES for
+        # attribution only; the $25 rolling cap is enforced from key-usage
+        # deltas (cash truth).
+        input_per_m_usd: 0.90
+        output_per_m_usd: 1.50
 
 # Secure location of the OpenRouter key ON THIS HOST. Read server-side only
 # by service/openrouter.py; never logged, never copied off the host, never

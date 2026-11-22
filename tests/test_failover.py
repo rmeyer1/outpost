@@ -138,13 +138,53 @@ check("sse malformed data line -> None",
 cfg = proxy_broker.load_broker_config(str(SCRATCH / "config" / "spend.yaml"))
 check("spend.yaml failover config loads",
       cfg["fo_enabled"] and cfg["fo_consecutive"] == 3
-      and cfg["fo_window"] == 60 and cfg["fo_codes"] == [429]
+      and cfg["fo_window"] == 60 and cfg["fo_codes"] == [429, 402]
       and cfg["or_model"] == "deepseek/deepseek-v4-flash-0731"
       and cfg["or_path_prefix"] == "/api/v1"
       and cfg["inject_stream_usage"] is True)
+check("or model menu loads",
+      sorted(openrouter.or_model_menu(cfg["spend_cfg"])) == sorted([
+          "deepseek/deepseek-v4-flash-0731", "minimax/minimax-m2.5",
+          "deepseek/deepseek-v4-pro"])
+      and openrouter.resolve_or_model(cfg["spend_cfg"])
+      == "deepseek/deepseek-v4-flash-0731")
 check("pricing config loads",
       pricing.lookup_price(cfg["spend_cfg"], "supergrok", "grok-4.6")
       == (0.0, 0.0, "subscription"))
+check("pricing: m2.5 entry",
+      pricing.lookup_price(cfg["spend_cfg"], "openrouter",
+                           "minimax/minimax-m2.5") == (0.27, 0.95,
+                                                       "token_estimate"))
+check("pricing: v4-pro entry",
+      pricing.lookup_price(cfg["spend_cfg"], "openrouter",
+                           "deepseek/deepseek-v4-pro") == (0.90, 1.50,
+                                                           "token_estimate"))
+# legacy config: only the singular model: key -> that value is the default
+_legacy = {
+    "tiers": {"openrouter": {"model": "legacy/model-1"}},
+    "failover": {}, "telemetry": {},
+}
+check("legacy singular model: key acts as default",
+      openrouter.resolve_or_model(_legacy) == "legacy/model-1")
+check("legacy config -> empty menu",
+      openrouter.or_model_menu(_legacy) == [])
+
+# per-job model plumb: job's or_model overrides the default in broker cfg
+_legacy_path = SCRATCH / "legacy-spend.yaml"
+_legacy_path.write_text("tiers:\n  openrouter:\n    model: legacy/model-1\n"
+                        "failover:\n  status_codes: [429]\n")
+cfg_legacy = proxy_broker.load_broker_config(str(_legacy_path))
+check("broker config: legacy model is the default",
+      cfg_legacy["or_model"] == "legacy/model-1")
+cfg_sel = proxy_broker.load_broker_config(
+    str(_legacy_path), {"or_model": "minimax/minimax-m2.5"})
+check("broker config: job's or_model overrides default",
+      cfg_sel["or_model"] == "minimax/minimax-m2.5")
+check("broker config: model rewrite uses job selection",
+      proxy_broker.load_broker_config(
+          str(SCRATCH / "config" / "spend.yaml"),
+          {"or_model": "deepseek/deepseek-v4-pro"})["or_model"]
+      == "deepseek/deepseek-v4-pro")
 
 db_path = str(SCRATCH / "state.sqlite")
 conn = db.connect(db_path)
@@ -347,6 +387,220 @@ sg_srv.shutdown()
 sg_srv.server_close()
 or_srv.shutdown()
 or_srv.server_close()
+
+# ------------------------------------------------- integration: 402 failover
+# A FIRST-request 402 (credit exhaustion) must fail over immediately and
+# the triggering request must be retried against OpenRouter — the
+# container never sees the 402.
+# (Remove the $30 cap-seeding rows from the cap-hit test above so the
+# failover precheck has budget.)
+conn = db.connect(db_path)
+conn.execute("DELETE FROM spend_ledger WHERE note='seeded cap'")
+conn.commit()
+conn.close()
+
+class MockSuperGrok402(BaseHTTPRequestHandler):
+    requests = 0
+    lock = threading.Lock()
+
+    def _send(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        with MockSuperGrok402.lock:
+            MockSuperGrok402.requests += 1
+        # Always 402: credit exhaustion; retrying will not recover.
+        self._send(402, json.dumps({
+            "error": {"code": "personal-team-blocked:spending-limit",
+                      "message": "You have run out of credits or need a "
+                                 "Grok subscription."}}).encode())
+
+    def log_message(self, *a):
+        pass
+
+
+class MockOpenRouter402(BaseHTTPRequestHandler):
+    seen = []
+    lock = threading.Lock()
+
+    def _send(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length)
+        with MockOpenRouter402.lock:
+            MockOpenRouter402.seen.append({
+                "path": self.path,
+                "auth": self.headers.get("Authorization"),
+                "body": json.loads(body.decode()),
+            })
+        self._send(200, json.dumps(
+            {"choices": [{"message": {"content": "ok"}}],
+             "usage": {"prompt_tokens": 50, "completion_tokens": 10}}).encode())
+
+    def log_message(self, *a):
+        pass
+
+
+job_id4 = "job-fo402"
+conn = db.connect(db_path)
+db.insert_job(conn, job_id=job_id4, type="code", repo="https://x/y",
+              base="main", task="t", engine_requested="hermes",
+              budget_usd=0, max_minutes=60, provider="supergrok")
+db.update_job(conn, job_id4, status="running")
+conn.close()
+
+sg_port4 = free_port()
+or_port4 = free_port()
+listen4 = free_port()
+sg_srv4 = HTTPServer(("127.0.0.1", sg_port4), MockSuperGrok402)
+or_srv4 = HTTPServer(("127.0.0.1", or_port4), MockOpenRouter402)
+threading.Thread(target=sg_srv4.serve_forever, daemon=True).start()
+threading.Thread(target=or_srv4.serve_forever, daemon=True).start()
+
+env4 = dict(env, CA_OR_HOST="127.0.0.1", CA_OR_PORT=str(or_port4),
+            CA_OR_TLS="0", CA_OR_KEY_FILE=str(key_file),
+            CA_OR_USAGE_MOCK="5.0")
+broker4 = subprocess.Popen(
+    [sys.executable, str(SCRATCH / "service" / "proxy_broker.py"),
+     str(listen4), str(sg_port4), "secrettoken", job_id4, db_path,
+     str(SCRATCH / "config" / "spend.yaml"), str(SCRATCH / "broker4.log")],
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env4, text=True)
+assert wait_tcp(listen4), "broker4 (402) did not start"
+
+
+def client_post4():
+    import http.client
+    c = http.client.HTTPConnection("127.0.0.1", listen4, timeout=20)
+    c.request("POST", "/v1/chat/completions", body=json.dumps(
+        {"model": "grok-4.7", "messages": [{"role": "user", "content": "hi"}]}),
+        headers={"Authorization": "Bearer secrettoken",
+                 "Content-Type": "application/json"})
+    r = c.getresponse()
+    body = r.read()
+    c.close()
+    return r.status, body
+
+
+s402, b402 = client_post4()
+check("402: container sees 200 (never the 402)", s402 == 200,
+      f"got {s402} {b402[:120]!r}")
+check("402: failover landed on default model",
+      json.loads(b402)["choices"][0]["message"]["content"] == "ok")
+time.sleep(0.4)
+with MockSuperGrok402.lock:
+    sg402_hits = MockSuperGrok402.requests
+with MockOpenRouter402.lock:
+    or402_hits = list(MockOpenRouter402.seen)
+check("402: supergrok upstream saw exactly 1 request",
+      sg402_hits == 1, f"saw {sg402_hits}")
+check("402: openrouter upstream got the retried request",
+      len(or402_hits) == 1, f"saw {len(or402_hits)}")
+if or402_hits:
+    check("402: retried body model rewritten to default",
+          or402_hits[0]["body"]["model"] == "deepseek/deepseek-v4-flash-0731")
+    check("402: retried path remapped",
+          or402_hits[0]["path"] == "/api/v1/chat/completions")
+conn = db.connect(db_path)
+j4 = db.get_job(conn, job_id4)
+check("402: provider flipped to openrouter", j4["provider"] == "openrouter")
+check("402: failover fields + reason name the 402",
+      j4["failover_from"] == "supergrok" and j4["failover_to"] == "openrouter"
+      and "402" in (j4["failover_reason"] or ""),
+      j4.get("failover_reason"))
+check("402: baseline recorded", j4["or_baseline_usd"] == 5.0,
+      j4["or_baseline_usd"])
+toks4 = db.token_totals(conn, job_id4)
+check("402: token telemetry recorded from the retried request",
+      toks4["requests"] == 1 and toks4["prompt_tokens"] == 50, str(toks4))
+conn.close()
+broker4.terminate()
+broker4.wait(timeout=10)
+sg_srv4.shutdown()
+sg_srv4.server_close()
+or_srv4.shutdown()
+or_srv4.server_close()
+
+# ------------------------------------------- integration: 402 with cap already hit
+# First-request 402 but the OpenRouter rolling cap is already breached:
+# no failover, needs_attention, and the 402 passes through to the caller.
+
+job_id5 = "job-fo402cap"
+conn = db.connect(db_path)
+db.insert_job(conn, job_id=job_id5, type="code", repo="https://x/y",
+              base="main", task="t", engine_requested="hermes",
+              budget_usd=0, max_minutes=60, provider="supergrok")
+db.update_job(conn, job_id5, status="running")
+db.record_spend(conn, job_id5, 30.0, "or_key_delta", "seeded cap")
+conn.close()
+
+sg_port5 = free_port()
+or_port5 = free_port()
+listen5 = free_port()
+sg_srv5 = HTTPServer(("127.0.0.1", sg_port5), MockSuperGrok402)
+or_srv5 = HTTPServer(("127.0.0.1", or_port5), MockOpenRouter402)
+threading.Thread(target=sg_srv5.serve_forever, daemon=True).start()
+threading.Thread(target=or_srv5.serve_forever, daemon=True).start()
+broker5 = subprocess.Popen(
+    [sys.executable, str(SCRATCH / "service" / "proxy_broker.py"),
+     str(listen5), str(sg_port5), "secrettoken", job_id5, db_path,
+     str(SCRATCH / "config" / "spend.yaml"), str(SCRATCH / "broker5.log")],
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    env=dict(env4, CA_OR_HOST="127.0.0.1", CA_OR_PORT=str(or_port5)),
+    text=True)
+assert wait_tcp(listen5), "broker5 (402 cap-hit) did not start"
+
+
+def client_post5():
+    import http.client
+    c = http.client.HTTPConnection("127.0.0.1", listen5, timeout=20)
+    c.request("POST", "/v1/chat/completions", body="{}",
+              headers={"Authorization": "Bearer secrettoken",
+                       "Content-Type": "application/json"})
+    r = c.getresponse()
+    r.read()
+    st = r.status
+    c.close()
+    return st
+
+
+s5 = client_post5()
+check("402 cap-hit: 402 passes through (no failover possible)", s5 == 402,
+      f"got {s5}")
+time.sleep(0.4)
+conn = db.connect(db_path)
+j5 = db.get_job(conn, job_id5)
+check("402 cap-hit: no failover committed", j5["provider"] == "supergrok"
+      and not j5["failover_at"], j5["provider"])
+check("402 cap-hit: job flagged needs_attention",
+      j5["status"] == "needs_attention", j5["status"])
+check("402 cap-hit: no token rows", db.token_totals(conn, job_id5)["requests"] == 0)
+conn.close()
+broker5.terminate()
+broker5.wait(timeout=10)
+sg_srv5.shutdown()
+sg_srv5.server_close()
+or_srv5.shutdown()
+or_srv5.server_close()
+
+# ----------------------------------------------- unit: 429 behaviour unchanged
+# A lone 429 must NOT trigger failover even though 402 is in status_codes
+# (429 keeps its consecutive/window rule).
+u2 = proxy_broker.FailoverTracker(threshold=2, window=60)
+u2.note_429(1000.0)
+fire, _ = u2.triggered(1000.1)
+check("429 unchanged: single 429 does not trigger", not fire)
 
 # ------------------------------------------------- integration: cap-hit blocks
 

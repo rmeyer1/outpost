@@ -6,7 +6,7 @@ service/api.py). This CLI only builds requests and pretty-prints responses,
 so its output is identical to the pre-API implementation.
 
 Usage:
-  agentctl [--client NAME] submit --type coding --repo scratch --task-file request.md [--engine auto] [--provider supergrok|openrouter] [--budget-usd 2] [--max-minutes 30] [--idempotency-key K] [--ref pull/8/head]
+  agentctl [--client NAME] submit --type coding --repo scratch --task-file request.md [--engine auto] [--provider supergrok|openrouter] [--model openrouter-model-id] [--budget-usd 2] [--max-minutes 30] [--idempotency-key K] [--ref pull/8/head]
   agentctl [--client NAME] submit --type artifact --task "build an Excel model that ..."
   agentctl status <job-id>
   agentctl logs <job-id> [--tail N]
@@ -100,6 +100,26 @@ def api(method: str, path: str, body: dict | None = None,
     return payload
 
 
+def _spend_config() -> dict:
+    """Local spend.yaml (model allowlist source for client-side validation).
+
+    Returns {} when the config cannot be read; the server then validates
+    and surfaces its error instead.
+    """
+    path = ROOT / "config" / "spend.yaml"
+    try:
+        with open(path) as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _or_models() -> list[str]:
+    cfg = _spend_config()
+    models = ((cfg.get("tiers") or {}).get("openrouter") or {}).get("models")
+    return [str(m) for m in models] if isinstance(models, list) else []
+
+
 def cmd_submit(a) -> int:
     if a.task_file:
         task = Path(a.task_file).read_text()
@@ -107,12 +127,24 @@ def cmd_submit(a) -> int:
         task = a.task
     else:
         task = sys.stdin.read()
+    if a.model:
+        if a.provider != "openrouter":
+            print(f"error: --model requires --provider openrouter (got "
+                  f"--provider {a.provider}); pass --provider openrouter to "
+                  f"use the OpenRouter model menu", file=sys.stderr)
+            return 2
+        allowed = _or_models()
+        if allowed and a.model not in allowed:
+            print(f"error: unknown openrouter model {a.model!r}; allowed: "
+                  + ", ".join(allowed), file=sys.stderr)
+            return 2
+        # Config unreadable: allowed is empty — let the server validate.
     payload = api("POST", "/jobs", {
         "type": a.type, "repo": a.repo, "base": a.base, "task": task,
         "engine": a.engine, "provider": a.provider,
         "budget_usd": a.budget_usd, "max_minutes": a.max_minutes,
         "idempotency_key": a.idempotency_key, "ref": a.ref,
-        "github_access": a.github,
+        "github_access": a.github, "model": a.model or None,
     })
     print(payload["id"])
     return 0
@@ -226,6 +258,10 @@ def main() -> int:
     s.add_argument("--engine", default="auto")
     s.add_argument("--provider", default="supergrok",
                    help="supergrok (default), openrouter, or auto")
+    s.add_argument("--model", default=None,
+                   help="OpenRouter model id (requires --provider openrouter); "
+                        "must be in tiers.openrouter.models. Default: "
+                        "tiers.openrouter.default_model")
     s.add_argument("--budget-usd", type=float)
     s.add_argument("--max-minutes", type=int)
     s.add_argument("--idempotency-key")

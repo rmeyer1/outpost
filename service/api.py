@@ -260,6 +260,7 @@ class Handler(BaseHTTPRequestHandler):
             idempotency_key=body.get("idempotency_key"),
             ref=body.get("ref"),
             github_access=bool(body.get("github_access")),
+            or_model=body.get("model"),
         )
         self._send_json(200, result)
         return 200

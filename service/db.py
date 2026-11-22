@@ -60,6 +60,9 @@ _MIGRATIONS = [
     # Opt-in GitHub access: the runner injects the host's gh token as
     # GH_TOKEN into this job's container only (see --github).
     ("jobs", "github_access", "INTEGER NOT NULL DEFAULT 0"),
+    # OpenRouter model selected at submit (--model); NULL = the configured
+    # default_model (or the legacy singular model key) applies.
+    ("jobs", "or_model", "TEXT"),
 ]
 
 _SPEND_LEDGER_SCHEMA = """
@@ -114,16 +117,17 @@ def new_job_id() -> str:
 
 def insert_job(conn, *, job_id, type, repo, base, task, engine_requested,
                budget_usd, max_minutes, idempotency_key=None, provider="supergrok",
-               ref=None, github_access=False) -> dict:
+               ref=None, github_access=False, or_model=None) -> dict:
     now = time.time()
     conn.execute(
         """INSERT INTO jobs
            (id,type,repo,base,task,engine_requested,status,budget_usd,max_minutes,
-            idempotency_key,created_at,updated_at,provider,ref,github_access)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            idempotency_key,created_at,updated_at,provider,ref,github_access,
+            or_model)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (job_id, type, repo, base, task, engine_requested, "queued",
          budget_usd, max_minutes, idempotency_key, now, now, provider, ref,
-         1 if github_access else 0),
+         1 if github_access else 0, or_model),
     )
     conn.commit()
     return get_job(conn, job_id)

@@ -111,6 +111,37 @@ s, p = jget("POST", "/jobs", body={"type": "coding", "repo": "nope", "task": "x"
 check("400 repo not allowlisted", s == 400 and "allowlist" in p.get("error", ""), f"{s} {p}")
 s, p = jget("POST", "/jobs", body={"type": "coding", "repo": "scratch", "task": "x", "provider": "bogus"})
 check("400 bad provider", s == 400 and "provider" in p.get("error", ""), f"{s} {p}")
+# --- submit: openrouter model menu ------------------------------------------
+s, p = jget("POST", "/jobs", body={"type": "coding", "repo": "scratch",
+                                   "task": "x", "provider": "openrouter",
+                                   "model": "minimax/minimax-m2.5"})
+check("200 submit with openrouter model", s == 200 and "id" in p, f"{s} {p}")
+orjid = p.get("id")
+s, p = jget("POST", "/jobs", body={"type": "coding", "repo": "scratch",
+                                   "task": "x", "provider": "openrouter",
+                                   "model": "no/such-model"})
+check("400 unknown openrouter model names allowed ids",
+      s == 400 and "allowed" in p.get("error", "")
+      and "deepseek/deepseek-v4-flash-0731" in p.get("error", "")
+      and "minimax/minimax-m2.5" in p.get("error", ""), f"{s} {p}")
+s, p = jget("POST", "/jobs", body={"type": "coding", "repo": "scratch",
+                                   "task": "x", "provider": "supergrok",
+                                   "model": "minimax/minimax-m2.5"})
+check("400 model without --provider openrouter",
+      s == 400 and "requires --provider openrouter" in p.get("error", ""),
+      f"{s} {p}")
+s, p = jget("POST", "/jobs", body={"type": "coding", "repo": "scratch",
+                                   "task": "x", "provider": "auto",
+                                   "model": "minimax/minimax-m2.5"})
+check("400 model with provider auto",
+      s == 400 and "requires --provider openrouter" in p.get("error", ""),
+      f"{s} {p}")
+s, p = jget("POST", "/jobs", body={"type": "coding", "repo": "scratch",
+                                   "task": "x", "provider": "openrouter"})
+check("200 submit openrouter without model (default applies)",
+      s == 200 and "id" in p, f"{s} {p}")
+nojid = p.get("id")
+
 s, p = jget("POST", "/jobs", body={"type": "bogus", "repo": "scratch", "task": "x"})
 check("400 bad type", s == 400 and "type" in p.get("error", ""), f"{s} {p}")
 s, raw, _ = req("POST", "/jobs", body=None)
@@ -144,6 +175,13 @@ s, p = jget("GET", f"/jobs/{jid}")
 check("status round trip", s == 200 and p["id"] == jid
       and p["status"] == "queued" and p["provider"] == "supergrok"
       and "tokens" in p, f"{s} {p}")
+s, p = jget("GET", f"/jobs/{orjid}")
+check("status: submitted model stored",
+      s == 200 and p.get("or_model") == "minimax/minimax-m2.5"
+      and p.get("provider") == "openrouter", f"{s} {p}")
+s, p = jget("GET", f"/jobs/{nojid}")
+check("status: no model -> or_model is None (default applies)",
+      s == 200 and p.get("or_model") is None, f"{s} {p}")
 
 s, p = jget("GET", "/jobs/job_does_not_exist")
 check("404 unknown job", s == 404, f"{s} {p}")

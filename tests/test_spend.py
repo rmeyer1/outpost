@@ -237,6 +237,52 @@ check("submit --provider openrouter", r.returncode == 0 and new_id.startswith("j
 if new_id.startswith("job_"):
     check("provider persisted", db.get_job(conn2, new_id)["provider"] == "openrouter")
 
+# --- model menu through the real CLI + API ------------------------------------
+r = ctl("submit", "--type", "coding", "--task", "model job",
+        "--provider", "openrouter", "--model", "minimax/minimax-m2.5")
+m_id = r.stdout.strip()
+check("submit --model accepted", r.returncode == 0 and m_id.startswith("job_"),
+      r.stdout[:100] + r.stderr[:100])
+if m_id.startswith("job_"):
+    row = db.get_job(conn2, m_id)
+    check("model persisted", row["or_model"] == "minimax/minimax-m2.5",
+          str(row.get("or_model")))
+
+r = ctl("submit", "--type", "coding", "--task", "bad model",
+        "--provider", "openrouter", "--model", "no/such-model")
+check("CLI rejects unknown model with allowed list",
+      r.returncode == 2 and "no/such-model" in r.stderr
+      and "deepseek/deepseek-v4-flash-0731" in r.stderr,
+      r.stderr[:200])
+check("CLI rejects model without --provider openrouter",
+      (ctl("submit", "--type", "coding", "--task", "x",
+           "--provider", "supergrok", "--model", "minimax/minimax-m2.5")
+       .returncode == 2), )
+check("CLI rejects model with --provider auto",
+      (ctl("submit", "--type", "coding", "--task", "x",
+           "--provider", "auto", "--model", "minimax/minimax-m2.5")
+       .returncode == 2), )
+r = ctl("submit", "--type", "coding", "--task", "default model",
+        "--provider", "openrouter")
+def_id = r.stdout.strip()
+if def_id.startswith("job_"):
+    row = db.get_job(conn2, def_id)
+    check("no --model -> or_model NULL (default applies)",
+          row["or_model"] is None, str(row.get("or_model")))
+else:
+    check("no --model -> or_model NULL (default applies)", False, r.stderr[:100])
+
+# runner direct-OR path: engine model = job's selection else tier default
+row = db.get_job(conn2, m_id)
+or_cfg = yaml.safe_load(open(os.path.join(scratch, "config", "spend.yaml")))
+check("runner model: job selection wins",
+      (row.get("or_model")
+       or orp.resolve_or_model(or_cfg)) == "minimax/minimax-m2.5")
+row = db.get_job(conn2, def_id)
+check("runner model: no selection -> tier default",
+      (row.get("or_model")
+       or orp.resolve_or_model(or_cfg)) == "deepseek/deepseek-v4-flash-0731")
+
 conn.close()
 conn2.close()
 api_proc.terminate()

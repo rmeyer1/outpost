@@ -87,6 +87,38 @@ def cap_policy(spend_cfg: dict) -> tuple[float, float]:
     return (float(tier.get("cap_usd", 25.0)),
             float(tier.get("cap_window_days", 7.0)))
 
+DEFAULT_OR_MODEL = "deepseek/deepseek-v4-flash-0731"
+
+
+def or_model_menu(spend_cfg: dict) -> list[str]:
+    """Allowlist of OpenRouter model ids a job may select with --model.
+
+    Empty when the tier config is missing.
+    """
+    tier = (spend_cfg.get("tiers") or {}).get("openrouter") or {}
+    models = tier.get("models")
+    if isinstance(models, list):
+        return [str(m) for m in models]
+    return []
+
+
+def resolve_or_model(spend_cfg: dict) -> str:
+    """The default OpenRouter model for a job (submit without --model) and
+    the mid-flight SuperGrok -> OpenRouter failover target.
+
+    Resolution order: tiers.openrouter.default_model, then the legacy
+    singular `model:` key (back-compat for deployments that never migrated
+    to the menu), then the hardcoded fallback.
+    """
+    tier = (spend_cfg.get("tiers") or {}).get("openrouter") or {}
+    default = tier.get("default_model")
+    if isinstance(default, str) and default:
+        return default
+    legacy = tier.get("model")
+    if isinstance(legacy, str) and legacy:
+        return legacy
+    return DEFAULT_OR_MODEL
+
 
 def resolve_provider(job: dict, engine_name: str, spend_cfg: dict) -> str:
     """Resolve 'supergrok' vs 'openrouter' for a job.
