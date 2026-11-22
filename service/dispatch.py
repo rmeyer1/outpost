@@ -77,8 +77,9 @@ def submit_job(*, type: str, repo: str, base: str = "main", task: str = "",
                budget_usd: float | None = None, max_minutes: int | None = None,
                idempotency_key: str | None = None,
                ref: str | None = None,
-               github_access: bool = False) -> dict:
+               github_access: bool = False, or_model: str | None = None) -> dict:
     config = load_config()
+    spend_cfg = load_spend()
     if type not in JOB_TYPES:
         raise DispatchError(400,
                             f"type must be one of {list(JOB_TYPES)}, got {type!r}")
@@ -92,6 +93,19 @@ def submit_job(*, type: str, repo: str, base: str = "main", task: str = "",
     if provider not in PROVIDERS:
         raise DispatchError(
             400, f"provider must be supergrok|openrouter|auto, got {provider}")
+    menu = or_provider.or_model_menu(spend_cfg)
+    if or_model:
+        if provider != "openrouter":
+            raise DispatchError(
+                400,
+                "--model requires --provider openrouter (got "
+                f"provider={provider}); pass --provider openrouter to use "
+                "the OpenRouter model menu")
+        if or_model not in menu:
+            raise DispatchError(
+                400,
+                f"unknown openrouter model {or_model!r}; allowed: "
+                + (", ".join(menu) if menu else "(none configured)"))
     ref = validate_ref(ref)
     github_cfg = config.get("github") or {}
     if github_access and not github_cfg.get("enabled", True):
@@ -120,11 +134,13 @@ def submit_job(*, type: str, repo: str, base: str = "main", task: str = "",
             provider=provider,
             ref=ref,
             github_access=github_access,
+            or_model=or_model,
         )
         log_event(db, job["id"], "submit",
                   f"type={job['type']} repo={repo} engine={engine} "
                   f"provider={provider} ref={ref} "
-                  f"github_access={bool(github_access)}")
+                  f"github_access={bool(github_access)} "
+                  f"or_model={or_model or 'default'}")
         return {"id": job["id"], "deduplicated": False}
     finally:
         db.close()
@@ -135,7 +151,8 @@ _STATUS_KEYS = (
     "engine_reason", "provider", "budget_usd", "max_minutes", "created_at",
     "started_at", "finished_at", "attention_flagged_at",
     "attention_acked_at", "spend_usd", "kill_reason", "failover_at",
-    "failover_from", "failover_to", "failover_reason", "github_access", "error",
+    "failover_from", "failover_to", "failover_reason", "github_access",
+    "or_model", "error",
 )
 
 

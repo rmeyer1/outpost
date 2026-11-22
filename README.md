@@ -66,6 +66,19 @@ when available, otherwise loopback). It is the primary interface;
   back along a registry chain.
 - `provider`: `supergrok` (default, subscription-funded) | `openrouter`
   (metered, $25 rolling 7-day cap) | `auto`.
+- `model`: OpenRouter model id, only valid with `provider: openrouter`.
+  Must be one of the allowlist in `config/spend.yaml` →
+  `tiers.openrouter.models`:
+  - `deepseek/deepseek-v4-flash-0731` — the default (cheap/fast).
+  - `minimax/minimax-m2.5` — $0.27 in / $0.95 out per 1M tokens, ~198K
+    context (OpenRouter catalogue).
+  - `deepseek/deepseek-v4-pro` — $0.90 in / $1.50 out per 1M tokens
+    (OpenRouter catalogue). The plain `deepseek-v4-pro` id (0423 release),
+    not the newer `-0813` GA id — the 0423 id is still live on OpenRouter.
+  Omitting `model` uses the tier default (`default_model`, currently the
+  DeepSeek flash model). Adding a model later is a config-only change: one
+  entry in `tiers.openrouter.models` plus one entry in
+  `pricing.openrouter.models` — no code change.
 - `repo` must be on the server's allowlist. `scratch` always works for
   standalone tasks.
 - `idempotency_key`: resubmitting with the same key returns the original job
@@ -115,9 +128,12 @@ curl -s -H "Authorization: Bearer $TOKEN" -OJ $API/jobs/$JOB/artifacts/model.xls
   be liberal). OpenRouter is capped at $25 per rolling 7 days, enforced from
   real key-usage deltas; token-level per-job estimates are reported for
   attribution.
-- **Automatic failover.** If SuperGrok rate-limits mid-job (429s), the job
-  transparently hops to OpenRouter without restarting. The manifest records
-  it; expect a possible shift in response style after a hop.
+- **Automatic failover.** If SuperGrok rate-limits mid-job (429s) or the
+  subscription runs out of credits (a 402), the job transparently hops to
+  OpenRouter without restarting — 402s fail over immediately on the first
+  occurrence, 429s after the consecutive/window threshold — landing on the
+  default OpenRouter model. The manifest records it; expect a possible
+  shift in response style after a hop.
 - **Hang watchdog.** Jobs running past 45 minutes are flagged for attention
   (visible via `GET /attention`); unacknowledged jobs are killed at 75
   minutes. Acknowledged jobs may run to the absolute 3-hour ceiling.

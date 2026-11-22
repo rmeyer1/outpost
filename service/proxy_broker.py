@@ -9,14 +9,19 @@ Unlike a blind TCP relay, this broker speaks HTTP/1.1 in both directions:
 
   * Auth: every request must carry `Authorization: Bearer <job-token>`
     (anything else gets a 401). The token grants nothing by itself.
-  * 429 detection: upstream status codes are visible host-side. N
+  * 402/429 detection: upstream status codes are visible host-side. N
     consecutive 429s (default 3) or 429s persisting > window_seconds
     (default 60s) triggers a mid-flight failover to OpenRouter — the
     broker re-points its upstream and the in-container agent just sees its
     requests start succeeding again. No container changes, no restart.
+    A 402 (credit exhaustion) is NOT transient: it fails over on the FIRST
+    occurrence, and the triggering request itself is retried against
+    OpenRouter so the container never sees the 402.
   * Failover guards: the OpenRouter rolling-cap pre-check runs first; if
     the $25 cap is already hit the job is flagged needs_attention instead
     of failing over. One failover per job, no fail-back, no flapping.
+    Failover lands on the DEFAULT OpenRouter model (the job's selected
+    model, when any, is used for jobs that start on OpenRouter directly).
   * Token telemetry: `usage` is extracted from every upstream response
     (plain JSON and SSE streams) and recorded per job for spend
     attribution.
@@ -160,6 +165,15 @@ class FailoverTracker:
             return True, (f"upstream 429s persisting {span:.0f}s "
                           f"(> {w:g}s window)")
         return False, ""
+
+
+def _status_reason(status: int) -> str:
+    """Human-readable label for an upstream failover trigger status."""
+    if status == 402:
+        return "402 (credit exhaustion)"
+    if status == 429:
+        return "429 (rate limit)"
+    return f"HTTP {status}"
 
 
 # ---------------------------------------------------------------------------
@@ -385,35 +399,44 @@ class BrokerState:
                 changed = True
         return json.dumps(obj).encode("utf-8") if changed else body
 
-    # -- 429 handling + failover -----------------------------------------
+    # -- 402/429 handling + failover -------------------------------------
     def note_upstream_status(self, status: int) -> None:
         """Called under no lock; takes the lock internally."""
         now = time.time()
         with self.lock:
             if self.mode != "supergrok":
                 return
-            if status in self.cfg["fo_codes"]:
+            if status == 402:
+                # Credit exhaustion is NOT transient: retrying will not
+                # recover the tier, so the FIRST 402 fires the failover
+                # (subject to the cap pre-check) instead of a counter.
+                n = "402 (first, non-transient)"
+            elif status in self.cfg["fo_codes"]:
                 self.n_429 += 1
                 self.tracker.note_429(now)
-                n = self.n_429
+                n = f"429 #{self.n_429}"
             else:
                 self.tracker.note_ok(now)
                 return
-        if status in self.cfg["fo_codes"]:
-            self.log_event("ratelimit",
-                           f"upstream 429 #{n} from supergrok proxy")
-            self.maybe_failover(now)
+        self.log_event("ratelimit",
+                       f"upstream {n} from supergrok proxy")
+        self.maybe_failover(now, status=status)
 
-    def maybe_failover(self, now: float) -> None:
+    def maybe_failover(self, now: float, status: int = 429) -> None:
         # Phase 1: decide under lock, then run the (slow) cap pre-check
         # WITHOUT the lock held.
         with self.lock:
             if (not self.cfg["fo_enabled"] or self.mode != "supergrok"
                     or self.failed_over or self.failover_blocked):
                 return
-            fire, reason = self.tracker.triggered(now)
-            if not fire:
-                return
+            label = _status_reason(status)
+            if status == 402:
+                # Non-transient: fail over on the FIRST occurrence.
+                fire, reason = True, f"first upstream {label}"
+            else:
+                fire, reason = self.tracker.triggered(now)
+                if not fire:
+                    return
             cfg, job_id = self.cfg, self.job_id
         pre_conn = dbmod.connect(self.db_path)
         try:
@@ -456,11 +479,13 @@ class BrokerState:
         # takes it internally).
         if blocked_reason is not None:
             self.log_event("failover_blocked", blocked_reason)
+            label = _status_reason(status)
             try:
                 def _op(conn):
-                    dbmod.flag_attention(conn, job_id,
-                                         "rate-limited with no overflow budget: "
-                                         + blocked_reason[:500])
+                    dbmod.flag_attention(
+                        conn, job_id,
+                        f"supergrok upstream {label} with no overflow "
+                        f"budget: {blocked_reason[:450]}")
                 self._dbop(_op)
             except Exception:
                 pass
@@ -519,27 +544,61 @@ def handle_connection(state: BrokerState, client: socket.socket) -> None:
             mode = state.mode
             path2, headers2, body2 = state.rewrite(method, path, headers, body)
             scheme, host, port = state.upstream()
-        if scheme == "https":
-            uconn = http.client.HTTPSConnection(host, port,
-                                                timeout=UPSTREAM_TIMEOUT)
-        else:
-            uconn = http.client.HTTPConnection(host, port,
-                                               timeout=UPSTREAM_TIMEOUT)
-        try:
-            uconn.request(method, path2, body=body2 or None,
-                          headers={k: v for k, v in headers2})
-            resp = uconn.getresponse()
-            status, reason = resp.status, resp.reason
-        except Exception as exc:
-            state.log_event("proxy_error",
-                            f"upstream unreachable ({mode}): {type(exc).__name__}")
-            send_response(wfile, 502, "Bad Gateway",
-                          [("Content-Length", "0"), ("Connection", "close")],
-                          b"")
-            return
+        # First upstream attempt happens before the status line is seen.
+        # A 402 (credit exhaustion) is fatal to the in-container agent, so
+        # when the failover commits we re-run the SAME request against
+        # OpenRouter and the container never sees the 402.
+        for attempt in range(2):
+            if scheme == "https":
+                uconn = http.client.HTTPSConnection(host, port,
+                                                    timeout=UPSTREAM_TIMEOUT)
+            else:
+                uconn = http.client.HTTPConnection(host, port,
+                                                   timeout=UPSTREAM_TIMEOUT)
+            try:
+                uconn.request(method, path2, body=body2 or None,
+                              headers={k: v for k, v in headers2})
+                resp = uconn.getresponse()
+                status, reason = resp.status, resp.reason
+            except Exception as exc:
+                state.log_event("proxy_error",
+                                f"upstream unreachable ({mode}): "
+                                f"{type(exc).__name__}")
+                send_response(wfile, 502, "Bad Gateway",
+                              [("Content-Length", "0"), ("Connection",
+                                                         "close")], b"")
+                try:
+                    uconn.close()
+                except Exception:
+                    pass
+                return
 
-        # 429 detection happens on the status line, before the body.
-        state.note_upstream_status(status)
+            # 402/429 detection happens on the status line, before the
+            # body. A 429 is passed through (harmless for the agent). A
+            # 402 means the tier is exhausted: note_upstream_status runs
+            # the failover decision synchronously (cap pre-check, commit),
+            # so after it returns the mode reflects the outcome.
+            state.note_upstream_status(status)
+            if status == 402:
+                with state.lock:
+                    if state.mode == "supergrok":
+                        # Failover did not commit (cap hit, key unreadable,
+                        # or disabled) — nothing to retry against. The guards
+                        # have flagged needs_attention; pass the 402 through
+                        # and let the job end visibly.
+                        break
+                    # Failover committed: re-rewrite for OpenRouter and
+                    # retry on the next loop pass.
+                    path2, headers2, body2 = state.rewrite(method, path,
+                                                           headers, body)
+                    scheme, host, port = state.upstream()
+                    mode = state.mode
+                try:
+                    uconn.close()
+                except Exception:
+                    pass
+                continue
+            break
 
         ctype = (resp.getheader("Content-Type") or "").lower()
         resp_headers = [(k, v) for k, v in resp.getheaders()
@@ -619,7 +678,16 @@ def handle_connection(state: BrokerState, client: socket.socket) -> None:
 # Config + entrypoint.
 # ---------------------------------------------------------------------------
 
-def load_broker_config(spend_yaml_path: str) -> dict:
+def load_broker_config(spend_yaml_path: str,
+                       job_row: dict | None = None) -> dict:
+    """Broker config from spend.yaml, plus the job's per-model override.
+
+    `or_model` resolution: the job's selected model (its `or_model` db
+    column, set at submit with --model) when set, else the configured
+    default (default_model, legacy singular `model` key, then a hardcoded
+    fallback). Failover lands on that same default because a job that
+    fails over mid-flight never selected a model.
+    """
     import os
     with open(spend_yaml_path) as f:
         spend_cfg = yaml.safe_load(f)
@@ -627,6 +695,7 @@ def load_broker_config(spend_yaml_path: str) -> dict:
     tel = spend_cfg.get("telemetry") or {}
     or_tier = (spend_cfg.get("tiers") or {}).get("openrouter") or {}
     codes = fo.get("status_codes", [429])
+    selected = (job_row or {}).get("or_model")
     return {
         "spend_cfg": spend_cfg,
         "fo_enabled": _env_bool("CA_FO_ENABLED", fo.get("enabled", True)),
@@ -640,7 +709,8 @@ def load_broker_config(spend_yaml_path: str) -> dict:
         "or_port": _env_int("CA_OR_PORT", or_tier.get("api_port", 443)),
         "or_tls": _env_bool("CA_OR_TLS", or_tier.get("api_tls", True)),
         "or_path_prefix": or_tier.get("path_prefix", "/api/v1"),
-        "or_model": or_tier.get("model", "deepseek/deepseek-v4-flash-0731"),
+        "or_model": (or_provider.resolve_or_model(spend_cfg) if not selected
+                     else str(selected)),
         "inject_stream_usage": _env_bool(
             "CA_TELEMETRY_INJECT_STREAM_USAGE",
             tel.get("inject_stream_usage", True)),
@@ -651,7 +721,19 @@ def main() -> int:
     (listen_port, sg_port, token, job_id, db_path, spend_yaml_path,
      log_path) = (int(sys.argv[1]), int(sys.argv[2]), sys.argv[3],
                   sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7])
-    cfg = load_broker_config(spend_yaml_path)
+    # Resolve the job's selected OpenRouter model (jobs that fail over
+    # mid-flight never selected one -> the configured default model).
+    job_row = None
+    try:
+        conn = dbmod.connect(db_path)
+        try:
+            job_row = dbmod.get_job(conn, job_id)
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"broker: could not read job row for model selection: "
+              f"{type(exc).__name__}", flush=True)
+    cfg = load_broker_config(spend_yaml_path, job_row)
     state = BrokerState(cfg, job_id, db_path, log_path, token, sg_port)
     # If a previous broker incarnation already failed this job over (e.g.
     # after a runner restart), resume in openrouter mode immediately.

@@ -268,10 +268,12 @@ def main(job_id: str) -> int:
             except (TypeError, ValueError):
                 or_poll_seconds = 300.0
             # Point the in-container agent at OpenRouter's OpenAI-compatible
-            # endpoint instead of the brokered SuperGrok proxy.
+            # endpoint instead of the brokered SuperGrok proxy. The model is
+            # the job's --model selection when set, else the tier default.
             engine_cfg = dict(engine_cfg)
-            engine_cfg["model"] = or_tier.get("model",
-                                              "deepseek/deepseek-v4-flash-0731")
+            engine_cfg["model"] = (
+                job.get("or_model")
+                or or_provider.resolve_or_model(spend_cfg))
 
         # 2. repo allowlist (checked again at the boundary)
         allow = config["repos"]["allowlist"]
@@ -563,6 +565,8 @@ def main(job_id: str) -> int:
             "engine": {"requested": job["engine_requested"],
                        "selected": engine_name, "reason": reason},
             "provider": provider_now,
+            "or_model": (job.get("or_model")
+                         or or_provider.resolve_or_model(spend_cfg)),
             "github_access": bool(job.get("github_access")),
             "container": {"name": name, "image": config["image"]["name"]},
             "limits": {"max_minutes": max_minutes,
